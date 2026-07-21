@@ -1,0 +1,30 @@
+# credentials — never commit
+.env
+
+# database (runtime data, not source)
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# presentation screenshots (added by user)
+presentation/screenshots/
