@@ -1,0 +1,1387 @@
+/* ============================================================
+   Bioreactor Dashboard  —  frontend application
+   ============================================================ */
+"use strict";
+
+const App = (() => {
+  // ── state ──────────────────────────────────────────────────
+  let CONFIG = null;          // from /api/config
+  let latestData = {};        // bioreactor_id -> {param -> {value,quality,timestamp}}
+  let activeBR = null;        // currently selected bioreactor id (null = overview)
+  let activeView = "bioreactor"; // 'bioreactor' | 'analytical'
+  let timeRangeHours = 24;
+  let ws = null;
+  let wsRetryDelay = 2000;
+  let charts = {};            // chart instances keyed by canvas id
+  let historyCache = {};      // key: `${br}/${param}/${hours}` -> [{timestamp,value}]
+  let selectedParam = null;   // for detail view KPI highlight
+  let activeAnalTab = "bioht"; // 'bioht' | 'nova'
+  let _novaRowsCache = [];     // text+date filtered rows (used by chart)
+  let _novaHistFull  = [];     // full date-range rows before text filter
+  let _novaSampFull  = [];     // full sample list before text filter
+  let _biohtRowsCache = [];
+  let _biohtHistFull  = [];
+  let _biohtSampFull  = [];
+  let _biohtAnalyteMap = {};   // display label -> [test_abbrev, ...]
+  let _biohtDebounceTimer = null;
+  let _novaDebounceTimer  = null;
+
+  // ── DOM refs ───────────────────────────────────────────────
+  const content   = document.getElementById("content");
+  const brNav     = document.getElementById("br-nav");
+  const opcBadge  = document.getElementById("opc-badge");
+  const clockEl   = document.getElementById("clock");
+  const trSelect  = document.getElementById("time-range");
+
+  // ── init ───────────────────────────────────────────────────
+  async function init() {
+    startClock();
+    CONFIG = await fetch("/api/config").then(r => r.json());
+    buildNav();
+    latestData = await fetch("/api/latest").then(r => r.json());
+    renderView();
+    connectWS();
+    trSelect.addEventListener("change", () => {
+      timeRangeHours = +trSelect.value;
+      historyCache = {};
+      renderView();
+    });
+  }
+
+  function startClock() {
+    const update = () => { clockEl.textContent = new Date().toLocaleTimeString(); };
+    update();
+    setInterval(update, 1000);
+  }
+
+  // ── navigation ─────────────────────────────────────────────
+  function buildNav() {
+    brNav.innerHTML = "";
+    const all = makeNavItem("All Bioreactors", null, null, activeBR === null);
+    brNav.appendChild(all);
+
+    // Group bioreactors by their group field
+    const groups = {};
+    CONFIG.bioreactors.forEach(br => {
+      const g = br.group || "Other";
+      (groups[g] = groups[g] || []).push(br);
+    });
+
+    Object.entries(groups).forEach(([groupName, brs]) => {
+      const label = document.createElement("p");
+      label.style.cssText = "font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;padding:12px 10px 4px;";
+      label.textContent = groupName;
+      brNav.appendChild(label);
+      brs.forEach(br => {
+        brNav.appendChild(makeNavItem(br.name, br.id, br.id, activeBR === br.id));
+      });
+    });
+  }
+
+  function makeNavItem(label, brId, dotId, active) {
+    const btn = document.createElement("button");
+    btn.className = "nav-item" + (active ? " active" : "");
+    if (dotId) {
+      const dot = document.createElement("span");
+      dot.className = "nav-dot";
+      dot.id = "nav-dot-" + dotId;
+      btn.appendChild(dot);
+    }
+    const span = document.createElement("span");
+    span.textContent = label;
+    btn.appendChild(span);
+    btn.addEventListener("click", () => { activeBR = brId; buildNav(); renderView(); });
+    return btn;
+  }
+
+  function updateNavDots() {
+    CONFIG.bioreactors.forEach(br => {
+      const dot = document.getElementById("nav-dot-" + br.id);
+      if (!dot) return;
+      const d = latestData[br.id];
+      dot.className = "nav-dot" + (d ? "" : " offline");
+    });
+  }
+
+  // ── WebSocket ──────────────────────────────────────────────
+  function connectWS() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onopen = () => {
+      wsRetryDelay = 2000;
+      setOpcBadge("connected");
+    };
+
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "snapshot") {
+        latestData = msg.data;
+        updateView();
+      } else if (msg.type === "readings") {
+        applyReadings(msg.data);
+      }
+    };
+
+    ws.onclose = () => {
+      setOpcBadge("disconnected");
+      setTimeout(connectWS, wsRetryDelay);
+      wsRetryDelay = Math.min(wsRetryDelay * 1.5, 30000);
+    };
+
+    ws.onerror = () => ws.close();
+
+    // Keep-alive ping
+    setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 20000);
+  }
+
+  function applyReadings(readings) {
+    readings.forEach(r => {
+      latestData[r.bioreactor] = latestData[r.bioreactor] || {};
+      latestData[r.bioreactor][r.parameter] = {
+        value: r.value, quality: r.quality, timestamp: r.timestamp
+      };
+      // Append to chart live if detail view is open
+      const cacheKey = `${r.bioreactor}/${r.parameter}/${timeRangeHours}`;
+      if (historyCache[cacheKey]) {
+        historyCache[cacheKey].push({ timestamp: r.timestamp, value: r.value });
+      }
+    });
+    updateView();
+  }
+
+  function setOpcBadge(state) {
+    const protocol = CONFIG ? CONFIG.opc_protocol : "OPC";
+    if (state === "connected") {
+      const isSim = protocol === "SIMULATE";
+      opcBadge.className = "badge " + (isSim ? "badge-sim" : "badge-good");
+      opcBadge.textContent = isSim ? "OPC: Simulated" : "OPC: Connected";
+    } else if (state === "disconnected") {
+      opcBadge.className = "badge badge-bad pulse";
+      opcBadge.textContent = "OPC: Disconnected";
+    } else {
+      opcBadge.className = "badge badge-pending";
+      opcBadge.textContent = "OPC: Connecting…";
+    }
+  }
+
+  // ── rendering ──────────────────────────────────────────────
+  function renderView() {
+    destroyCharts();
+    document.getElementById("nav-analytical").classList.toggle("active", activeView === "analytical");
+    if (activeView === "analytical") { renderAnalytical(); return; }
+    if (activeBR === null) renderOverview();
+    else renderDetail(activeBR);
+    updateNavDots();
+  }
+
+  function updateView() {
+    if (activeView === "analytical") return; // analytical view refreshes on demand only
+    if (activeBR === null) updateOverviewValues();
+    else updateDetailKPIs(activeBR);
+    updateCharts();
+    updateNavDots();
+  }
+
+  // ---- Overview ----
+  function renderOverview() {
+    content.innerHTML = `<h2 class="section-title">All Bioreactors</h2><div class="overview-grid" id="overview-grid"></div>`;
+    const grid = document.getElementById("overview-grid");
+    CONFIG.bioreactors.forEach(br => {
+      grid.appendChild(makeBRCard(br));
+    });
+  }
+
+  function makeBRCard(br) {
+    const card = document.createElement("div");
+    card.className = "br-card";
+    card.id = "br-card-" + br.id;
+    card.addEventListener("click", () => { activeBR = br.id; buildNav(); renderView(); });
+
+    const header = document.createElement("div");
+    header.className = "br-card-header";
+    header.innerHTML = `<span class="br-card-title">${br.name}</span><span class="badge badge-pending" id="br-badge-${br.id}">–</span>`;
+    card.appendChild(header);
+
+    const grid = document.createElement("div");
+    grid.className = "br-params";
+    grid.id = "br-params-" + br.id;
+    card.appendChild(grid);
+
+    fillBRCardParams(br.id);
+    return card;
+  }
+
+  function fillBRCardParams(brId) {
+    const grid = document.getElementById("br-params-" + brId);
+    if (!grid) return;
+    grid.innerHTML = "";
+    const d = latestData[brId] || {};
+    Object.entries(CONFIG.parameters).forEach(([key, cfg]) => {
+      const val = d[key];
+      const div = document.createElement("div");
+      div.className = "param-mini";
+      div.id = `mini-${brId}-${key}`;
+      div.innerHTML = `
+        <div class="param-mini-label">${cfg.label}</div>
+        <div class="param-mini-value" style="color:${cfg.color}">
+          ${val ? fmtVal(val.value) : "–"}<span class="param-mini-unit">${cfg.unit}</span>
+        </div>`;
+      grid.appendChild(div);
+    });
+    updateBadge(brId);
+  }
+
+  function updateOverviewValues() {
+    CONFIG.bioreactors.forEach(br => {
+      const d = latestData[br.id] || {};
+      Object.entries(CONFIG.parameters).forEach(([key, cfg]) => {
+        const el = document.getElementById(`mini-${br.id}-${key}`);
+        if (!el) return;
+        const val = d[key];
+        el.querySelector(".param-mini-value").innerHTML =
+          `${val ? fmtVal(val.value) : "–"}<span class="param-mini-unit">${cfg.unit}</span>`;
+      });
+      updateBadge(br.id);
+    });
+  }
+
+  function updateBadge(brId) {
+    const badge = document.getElementById(`br-badge-${brId}`);
+    if (!badge) return;
+    const d = latestData[brId] || {};
+    const qualities = Object.values(d).map(v => v.quality);
+    if (qualities.length === 0) { badge.className = "badge badge-bad"; badge.textContent = "Offline"; return; }
+    const bad = qualities.some(q => q === "Bad");
+    const sim = qualities.some(q => q === "Simulated");
+    badge.className = "badge " + (bad ? "badge-bad" : sim ? "badge-sim" : "badge-good");
+    badge.textContent = bad ? "Fault" : sim ? "Simulated" : "Live";
+  }
+
+  // ---- Detail view ----
+  function renderDetail(brId) {
+    const br = CONFIG.bioreactors.find(b => b.id === brId);
+    if (!br) return;
+
+    content.innerHTML = `
+      <div class="detail-header">
+        <button class="back-btn" onclick="App._backToOverview()">← Back</button>
+        <h2 class="section-title" style="margin:0">${br.name}</h2>
+        <span class="badge badge-pending" id="detail-badge-${brId}">–</span>
+      </div>
+      <div class="kpi-row" id="kpi-row-${brId}"></div>
+      <div class="charts-grid" id="charts-grid-${brId}"></div>`;
+
+    renderKPIs(brId);
+    renderCharts(brId);
+    updateBadge(brId);
+  }
+
+  function renderKPIs(brId) {
+    const row = document.getElementById(`kpi-row-${brId}`);
+    if (!row) return;
+    row.innerHTML = "";
+    const d = latestData[brId] || {};
+    Object.entries(CONFIG.parameters).forEach(([key, cfg]) => {
+      const val = d[key];
+      const card = document.createElement("div");
+      card.className = "kpi-card" + (selectedParam === key ? " selected" : "");
+      card.id = `kpi-${brId}-${key}`;
+      card.style.borderTop = `3px solid ${cfg.color}`;
+      card.innerHTML = `
+        <div class="kpi-label">${cfg.label}</div>
+        <div class="kpi-value" style="color:${cfg.color}">
+          ${val ? fmtVal(val.value) : "–"}<span class="kpi-unit">${cfg.unit}</span>
+        </div>
+        <div class="kpi-quality" style="color:${qualityColor(val?.quality)}">${val?.quality || "No data"}</div>`;
+      card.addEventListener("click", () => openParamModal(brId, key));
+      row.appendChild(card);
+    });
+  }
+
+  function updateDetailKPIs(brId) {
+    const d = latestData[brId] || {};
+    Object.entries(CONFIG.parameters).forEach(([key, cfg]) => {
+      const card = document.getElementById(`kpi-${brId}-${key}`);
+      if (!card) return;
+      const val = d[key];
+      card.querySelector(".kpi-value").innerHTML =
+        `${val ? fmtVal(val.value) : "–"}<span class="kpi-unit">${cfg.unit}</span>`;
+      card.querySelector(".kpi-quality").textContent = val?.quality || "No data";
+      card.querySelector(".kpi-quality").style.color = qualityColor(val?.quality);
+    });
+    updateBadge(brId);
+  }
+
+  function renderCharts(brId) {
+    const grid = document.getElementById(`charts-grid-${brId}`);
+    if (!grid) return;
+    grid.innerHTML = "";
+    Object.entries(CONFIG.parameters).forEach(([key, cfg]) => {
+      const card = document.createElement("div");
+      card.className = "chart-card";
+      card.innerHTML = `
+        <div class="chart-card-header">
+          <span class="chart-card-title">${cfg.label} <span style="color:var(--muted);font-weight:400">(${cfg.unit})</span></span>
+          <button class="btn btn-sm btn-secondary" onclick="App.openParamModal('${brId}','${key}')">Expand</button>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-${brId}-${key}"></canvas></div>`;
+      grid.appendChild(card);
+      loadAndRenderChart(brId, key, `chart-${brId}-${key}`, 200);
+    });
+  }
+
+  async function loadAndRenderChart(brId, param, canvasId, height) {
+    const cacheKey = `${brId}/${param}/${timeRangeHours}`;
+    if (!historyCache[cacheKey]) {
+      const resp = await fetch(`/api/history/${brId}/${param}?hours=${timeRangeHours}`);
+      const json = await resp.json();
+      historyCache[cacheKey] = json.data;
+    }
+    const data = historyCache[cacheKey];
+    const cfg = CONFIG.parameters[param];
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    const points = data.map(r => ({ x: r.timestamp, y: r.value }));
+    const chart = new Chart(canvas, {
+      type: "line",
+      data: {
+        datasets: [{
+          data: points,
+          borderColor: cfg.color,
+          backgroundColor: cfg.color + "22",
+          borderWidth: 1.5,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` ${fmtVal(ctx.parsed.y)} ${cfg.unit}`
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: "time",
+            time: { tooltipFormat: "HH:mm:ss", displayFormats: { minute: "HH:mm", hour: "HH:mm", day: "MMM d" } },
+            ticks: { color: "#6b7280", maxTicksLimit: 8 },
+            grid: { color: "#2a2d3e" }
+          },
+          y: {
+            ticks: { color: "#6b7280" },
+            grid: { color: "#2a2d3e" },
+            suggestedMin: cfg.min,
+            suggestedMax: cfg.max,
+          }
+        }
+      }
+    });
+    charts[canvasId] = chart;
+  }
+
+  function updateCharts() {
+    Object.entries(charts).forEach(([canvasId, chart]) => {
+      // parse id: chart-{brId}-{param}
+      const parts = canvasId.replace("chart-", "").split("-");
+      const brId = parts[0];
+      const param = parts.slice(1).join("-");
+      const cacheKey = `${brId}/${param}/${timeRangeHours}`;
+      const data = historyCache[cacheKey];
+      if (!data) return;
+      chart.data.datasets[0].data = data.map(r => ({ x: r.timestamp, y: r.value }));
+      chart.update("none");
+    });
+  }
+
+  function destroyCharts() {
+    Object.values(charts).forEach(c => c.destroy());
+    charts = {};
+  }
+
+  // ── Modal: expanded chart ──────────────────────────────────
+  async function openParamModal(brId, param) {
+    const cfg = CONFIG.parameters[param];
+    const br = CONFIG.bioreactors.find(b => b.id === brId);
+    document.getElementById("modal-title").textContent = `${br.name} — ${cfg.label}`;
+    document.getElementById("modal-body").innerHTML =
+      `<div class="chart-full"><canvas id="modal-chart"></canvas></div>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+    await loadAndRenderChart(brId, param, "modal-chart", 400);
+  }
+
+  function closeModal() {
+    document.getElementById("modal-overlay").classList.add("hidden");
+    if (charts["modal-chart"]) { charts["modal-chart"].destroy(); delete charts["modal-chart"]; }
+    document.getElementById("modal-body").innerHTML = "";
+  }
+
+  // ── OPC UA Tag Browser ─────────────────────────────────────
+  async function showTagBrowser() {
+    document.getElementById("modal-title").textContent = "OPC UA Tag Browser";
+    document.getElementById("modal-body").innerHTML = `
+      <p style="color:var(--muted);margin-bottom:10px;font-size:13px">
+        Connect directly to a DASware 6 OPC UA server to discover the exact node IDs.<br>
+        Scivario (192.168.137.8): <code style="color:var(--accent)">opc.tcp://CTPCOG910098:51530/UA/connectServer</code><br>
+        DASbox (192.168.137.7): <code style="color:var(--accent)">opc.tcp://CTPCMO508723:51530/UA/connectServer</code>
+      </p>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
+        <input id="tb-url"  class="select" value="opc.tcp://CTPCOG910098:51530/UA/connectServer" style="padding:7px">
+        <input id="tb-root" class="select" placeholder="Root NodeId (optional, e.g. ns=2;s=Plant1/Unit1)" style="padding:7px;grid-column:1/3">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn btn-sm" onclick="App._tbBrowse()">Browse Nodes</button>
+        <button class="btn btn-sm btn-secondary" onclick="App._tbRead()">Read Single Node</button>
+      </div>
+      <div id="tb-result" style="font-family:monospace;font-size:12px;color:var(--text);white-space:pre-wrap;max-height:380px;overflow-y:auto;background:var(--bg);padding:10px;border-radius:6px;border:1px solid var(--border)">Results will appear here…
+
+Quick guide:
+  1. Click "Browse Nodes" to explore the full address space (starts from ObjectsFolder).
+  2. Copy a NodeId from the results, paste into "Root NodeId" and browse again to drill down.
+  3. Copy variable NodeIds into config.json under the matching bioreactor's "tags" section.
+  4. Use "Read Single Node" to test a specific node ID before committing it.</div>`;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+  }
+
+  async function _tbBrowse() {
+    const url  = document.getElementById("tb-url").value.trim();
+    const root = document.getElementById("tb-root").value.trim();
+    if (!url) { document.getElementById("tb-result").textContent = "Enter the OPC UA endpoint URL."; return; }
+    document.getElementById("tb-result").textContent = "Connecting to OPC UA server… (may take 5-10 seconds)";
+    try {
+      const apiUrl = `/api/opc/browse-ua?url=${encodeURIComponent(url)}&root_node=${encodeURIComponent(root)}`;
+      const resp = await fetch(apiUrl);
+      const data = await resp.json();
+      if (!resp.ok) { document.getElementById("tb-result").textContent = "Error: " + (data.detail || resp.statusText); return; }
+      if (!data.nodes.length) {
+        document.getElementById("tb-result").textContent = "No variable nodes found under " + (root || "ObjectsFolder") + ".\nTry a different root NodeId.";
+        return;
+      }
+      let text = `Found ${data.count} nodes under "${data.root_node}":\n\n`;
+      data.nodes.forEach(n => { text += `  ${n.node_id.padEnd(60)}  ${n.name}\n`; });
+      if (data.count >= 300) text += "\n(truncated at 300 — use a root NodeId to narrow down)";
+      text += "\n\nCopy node_id values into config.json tags section.";
+      document.getElementById("tb-result").textContent = text;
+    } catch (e) {
+      document.getElementById("tb-result").textContent = "Request failed: " + e.message;
+    }
+  }
+
+  async function _tbRead() {
+    const url    = document.getElementById("tb-url").value.trim();
+    const nodeId = document.getElementById("tb-root").value.trim();
+    if (!url || !nodeId) {
+      document.getElementById("tb-result").textContent = "Enter the OPC UA URL and a NodeId to read.";
+      return;
+    }
+    document.getElementById("tb-result").textContent = "Reading node…";
+    try {
+      const resp = await fetch(`/api/opc/read-ua?url=${encodeURIComponent(url)}&node_id=${encodeURIComponent(nodeId)}`);
+      const data = await resp.json();
+      if (!resp.ok) { document.getElementById("tb-result").textContent = "Error: " + (data.detail || resp.statusText); return; }
+      document.getElementById("tb-result").textContent =
+        `Node: ${data.node_id}\nName: ${data.display_name}\nValue: ${data.value}`;
+    } catch (e) {
+      document.getElementById("tb-result").textContent = "Request failed: " + e.message;
+    }
+  }
+
+  // ── Connection log ─────────────────────────────────────────
+  async function showConnectionLog() {
+    const rows = await fetch("/api/connection-log").then(r => r.json());
+    document.getElementById("modal-title").textContent = "OPC Connection Log";
+    let html = `<table class="log-table"><thead><tr><th>Time</th><th>Server</th><th>Status</th><th>Message</th></tr></thead><tbody>`;
+    if (rows.length === 0) html += `<tr><td colspan="4" style="color:var(--muted)">No log entries</td></tr>`;
+    rows.forEach(r => {
+      const color = r.status === "Connected" ? "var(--good)" : r.status === "Error" ? "var(--bad)" : "var(--muted)";
+      html += `<tr><td>${fmtTime(r.timestamp)}</td><td>${r.server}</td><td style="color:${color}">${r.status}</td><td>${r.message || ""}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+    document.getElementById("modal-body").innerHTML = html;
+    document.getElementById("modal-overlay").classList.remove("hidden");
+  }
+
+  // ── Helpers ────────────────────────────────────────────────
+  function fmtVal(v) {
+    if (v === null || v === undefined) return "–";
+    return Number(v).toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 });
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return "–";
+    const hasZone = ts.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(ts);
+    const d = new Date(hasZone ? ts : ts + "Z");
+    return isNaN(d.getTime()) ? ts : d.toLocaleString();
+  }
+
+  function qualityColor(q) {
+    if (!q) return "var(--muted)";
+    if (q === "Good") return "var(--good)";
+    if (q === "Simulated") return "var(--accent)";
+    return "var(--bad)";
+  }
+
+  // ── Analytical data view ──────────────────────────────────
+
+  async function showAnalytical() {
+    activeView = "analytical";
+    activeBR = null;
+    buildNav();
+    renderView();
+  }
+
+  async function renderAnalytical() {
+    const biohtActive = activeAnalTab === "bioht";
+    content.innerHTML = `
+      <div class="detail-header">
+        <button class="back-btn" onclick="App._backToOverview()">← Back</button>
+        <h2 class="section-title" style="margin:0">Analytical Results</h2>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:12px">
+        <button class="btn${biohtActive ? '' : ' btn-secondary'}" id="tab-btn-bioht" onclick="App._switchAnalTab('bioht')">BioHT / MAST Data</button>
+        <button class="btn${!biohtActive ? '' : ' btn-secondary'}" id="tab-btn-nova" onclick="App._switchAnalTab('nova')">Nova Flex2 (OPC)</button>
+      </div>
+      <div id="anal-content"></div>`;
+
+    if (activeAnalTab === "bioht") {
+      await _renderBiohtContent();
+    } else {
+      await _renderNovaContent();
+    }
+  }
+
+  async function _switchAnalTab(tab) {
+    activeAnalTab = tab;
+    // Update tab button styles
+    const bBioht = document.getElementById("tab-btn-bioht");
+    const bNova  = document.getElementById("tab-btn-nova");
+    if (bBioht) { bBioht.className = "btn" + (tab === "bioht" ? "" : " btn-secondary"); }
+    if (bNova)  { bNova.className  = "btn" + (tab === "nova"  ? "" : " btn-secondary"); }
+    // Destroy charts owned by the previous tab
+    ["anal-chart", "nova-chart"].forEach(id => {
+      if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+    });
+    const analContent = document.getElementById("anal-content");
+    if (!analContent) return;
+    analContent.innerHTML = "";
+    if (tab === "bioht") { await _renderBiohtContent(); }
+    else { await _renderNovaContent(); }
+  }
+
+  // ── BioHT tab ─────────────────────────────────────────────
+
+  function _biohtRefreshDebounced() {
+    clearTimeout(_biohtDebounceTimer);
+    _biohtDebounceTimer = setTimeout(_biohtRefresh, 600);
+  }
+
+  function _novaRefreshDebounced() {
+    clearTimeout(_novaDebounceTimer);
+    _novaDebounceTimer = setTimeout(_novaRefresh, 600);
+  }
+
+  async function _renderBiohtContent() {
+    const analContent = document.getElementById("anal-content");
+    if (!analContent) return;
+
+    const today      = new Date();
+    const ninetyAgo  = new Date(today - 90 * 24 * 3600 * 1000);
+    const todayStr   = today.toISOString().slice(0, 10);
+    const ninetyStr  = ninetyAgo.toISOString().slice(0, 10);
+
+    analContent.innerHTML = `
+      <div class="analytical-controls" style="flex-wrap:wrap;gap:8px">
+        <span style="color:var(--muted);font-size:12px;align-self:center">From:</span>
+        <input type="date" id="bioht-from" class="select" value="${ninetyStr}" style="width:140px" onchange="App._biohtRefreshDebounced()">
+        <span style="color:var(--muted);font-size:12px;align-self:center">To:</span>
+        <input type="date" id="bioht-to"   class="select" value="${todayStr}"  style="width:140px" onchange="App._biohtRefreshDebounced()">
+        <select id="bioht-analyte" class="select" style="width:180px" onchange="App._biohtDrawChart()">
+          <option value="">Select analyte to chart</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;cursor:pointer;white-space:nowrap" title="Group analytes that share the same base name — e.g. LDH2B and LDH2D both appear as LDH2">
+          <input type="checkbox" id="bioht-consolidate" onchange="App._biohtConsolidateToggle()" style="cursor:pointer">
+          Consolidate variants
+        </label>
+        <input type="text" id="bioht-sample-filter" class="select" placeholder="Filter by Sample ID…" style="width:180px" oninput="App._biohtFilter()">
+        <button class="btn btn-sm" onclick="App._biohtRefresh()">Refresh</button>
+        <button class="btn btn-sm btn-secondary" onclick="App._biohtImportTxt()" title="Import CEDEX BIO HT archive .txt files">Import TXT</button>
+        <input type="file" id="bioht-file-input" accept=".txt" multiple style="display:none" onchange="App._biohtHandleFileImport(event)">
+      </div>
+      <div style="display:flex;gap:16px;align-items:center;margin:4px 0 2px">
+        <div id="bioht-range-info" style="color:var(--muted);font-size:12px"></div>
+        <div id="bioht-mast-status" style="font-size:11px;margin-left:auto"></div>
+      </div>
+      <div style="height:10px"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <span style="color:var(--muted);font-size:12px;white-space:nowrap">View sample:</span>
+        <select id="bioht-sample-sel" class="select" style="flex:1;max-width:480px" onchange="App._biohtSelectSample()">
+          <option value="">Latest sample</option>
+        </select>
+      </div>
+      <div id="bioht-latest-card" style="margin-bottom:16px"></div>
+      <div id="bioht-chart-card" class="chart-card" style="display:none;margin-bottom:16px">
+        <div class="chart-card-header">
+          <span class="chart-card-title" id="bioht-chart-title">BioHT History</span>
+        </div>
+        <div style="position:relative;height:260px"><canvas id="bioht-chart"></canvas></div>
+      </div>
+      <div id="bioht-table-wrap"></div>`;
+    await _biohtRefresh();
+  }
+
+  async function _biohtRefresh() {
+    const fromEl = document.getElementById("bioht-from");
+    const toEl   = document.getElementById("bioht-to");
+    const since  = fromEl?.value ? fromEl.value + "T00:00:00" : null;
+    const until  = toEl?.value   ? toEl.value   + "T23:59:59" : null;
+
+    let latestRows = [], histData = [], samples = [], mastOnline = false;
+    try {
+      const params = new URLSearchParams();
+      if (since) params.set("since", since);
+      if (until) params.set("until", until);
+      const [histRes, sampRes] = await Promise.all([
+        fetch(`/api/bioht/all?${params}`),
+        fetch("/api/bioht/all-samples"),
+      ]);
+      if (histRes.ok) {
+        const d = await histRes.json();
+        histData   = d.data || [];
+        mastOnline = (d.mast_count || 0) > 0;
+      }
+      if (sampRes.ok) samples = (await sampRes.json()).data || [];
+    } catch (_) {}
+
+    // Derive latest from merged data
+    if (histData.length > 0) {
+      const newestTime = histData.reduce((a, b) => (a.sample_time > b.sample_time ? a : b)).sample_time;
+      const newestId   = histData.find(r => r.sample_time === newestTime)?.sample_id || "";
+      latestRows = histData.filter(r => r.sample_id === newestId);
+    }
+
+    _biohtHistFull = histData;
+    _biohtSampFull = samples;
+
+    // Show MAST connectivity status
+    const statusEl = document.getElementById("bioht-mast-status");
+    if (statusEl) {
+      statusEl.textContent = mastOnline ? "MAST: online" : "MAST: offline (showing local TXT data only)";
+      statusEl.style.color = mastOnline ? "var(--good)" : "var(--warn)";
+    }
+
+    _biohtApplyFilters(latestRows);
+  }
+
+  function _biohtFilter() { _biohtApplyFilters(null); }
+
+  function _biohtApplyFilters(latestRows) {
+    const raw = (document.getElementById("bioht-sample-filter")?.value || "").trim().toLowerCase();
+
+    const histData = raw
+      ? _biohtHistFull.filter(r => r.sample_id && r.sample_id.toLowerCase().includes(raw))
+      : _biohtHistFull;
+
+    const samples = raw
+      ? _biohtSampFull.filter(s => s.sample_id && s.sample_id.toLowerCase().includes(raw))
+      : _biohtSampFull;
+
+    _biohtRowsCache = histData;
+
+    const rangeInfo = document.getElementById("bioht-range-info");
+    if (rangeInfo) {
+      const n = new Set(histData.map(r => r.sample_id)).size;
+      if (n === 0) {
+        rangeInfo.textContent = raw ? `No samples match "${raw}" in the selected range.` : "No samples in selected date range.";
+        rangeInfo.style.color = "var(--warn)";
+      } else {
+        rangeInfo.textContent = `${n} sample${n !== 1 ? "s" : ""} — ${histData.length} measurements` +
+          (n < 10 ? " (widen range for more trend data)" : "");
+        rangeInfo.style.color = n < 10 ? "var(--warn)" : "var(--muted)";
+      }
+    }
+
+    _biohtPopulateSampleSelector(samples);
+
+    const selSample = document.getElementById("bioht-sample-sel")?.value;
+    if (selSample) {
+      const cached = histData.filter(r => r.sample_id === selSample);
+      if (cached.length > 0) {
+        _renderBiohtSampleCard(cached);
+      } else {
+        fetch(`/api/bioht/sample?sample_id=${encodeURIComponent(selSample)}`)
+          .then(r => r.ok ? r.json() : { data: [] })
+          .then(d => _renderBiohtSampleCard(d.data || []))
+          .catch(() => _renderBiohtSampleCard([]));
+      }
+    } else if (latestRows !== null) {
+      if (raw && histData.length > 0) {
+        const latestId = histData.reduce((a, b) => a.sample_time > b.sample_time ? a : b).sample_id;
+        _renderBiohtSampleCard(histData.filter(r => r.sample_id === latestId));
+      } else {
+        _renderBiohtSampleCard(latestRows);
+      }
+    }
+
+    _biohtPopulateAnalyteSelector(histData);
+    _renderBiohtTable(histData);
+    _biohtDrawChart();
+  }
+
+  function _biohtPopulateSampleSelector(samples) {
+    const sel = document.getElementById("bioht-sample-sel");
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Latest sample</option>';
+    samples.forEach(s => {
+      const o = document.createElement("option");
+      o.value = s.sample_id;
+      const srcTag = s.source === "mast" ? " [MAST]" : s.source === "both" ? " [MAST+TXT]" : " [TXT]";
+      o.textContent = `${s.sample_id}  —  ${fmtTime(s.latest_time)}${srcTag}`;
+      if (s.sample_id === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  async function _biohtSelectSample() {
+    const sel = document.getElementById("bioht-sample-sel");
+    const sampleId = sel?.value;
+    if (!sampleId) {
+      const r = await fetch("/api/bioht/latest").catch(() => null);
+      _renderBiohtSampleCard(r && r.ok ? (await r.json()).data || [] : []);
+      return;
+    }
+    const cached = _biohtRowsCache.filter(r => r.sample_id === sampleId);
+    if (cached.length > 0) { _renderBiohtSampleCard(cached); return; }
+    const r = await fetch(`/api/bioht/sample?sample_id=${encodeURIComponent(sampleId)}`).catch(() => null);
+    _renderBiohtSampleCard(r && r.ok ? (await r.json()).data || [] : []);
+  }
+
+  function _biohtBaseOf(abbrev) {
+    // Strip trailing letter (A-Z) — the dilution-variant suffix.
+    // Only strip if it leaves a non-empty string and the preceding char is a digit,
+    // so we don't mangle names like "LDH" that have no suffix.
+    return /\d[A-Z]$/i.test(abbrev) ? abbrev.slice(0, -1) : abbrev;
+  }
+
+  function _biohtPopulateAnalyteSelector(rows) {
+    const sel         = document.getElementById("bioht-analyte");
+    const consolidate = document.getElementById("bioht-consolidate")?.checked;
+    if (!sel) return;
+
+    const curDisplay = sel.value; // previously selected display label
+    const abbrevs    = [...new Set(rows.map(r => r.test_abbrev))].sort();
+
+    // Build analyte map: display label -> [original abbrevs]
+    const map = {};
+    abbrevs.forEach(a => {
+      const label = consolidate ? _biohtBaseOf(a) : a;
+      if (!map[label]) map[label] = [];
+      map[label].push(a);
+    });
+    _biohtAnalyteMap = map;
+
+    sel.innerHTML = '<option value="">Select analyte to chart</option>';
+    Object.keys(map).sort().forEach(label => {
+      const o = document.createElement("option");
+      o.value = label;
+      const variants = map[label];
+      o.textContent = variants.length > 1
+        ? `${label}  (${variants.join(", ")})`
+        : label;
+      // Preserve selection: match current display label or any underlying variant
+      if (label === curDisplay || variants.includes(curDisplay)) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  function _biohtConsolidateToggle() {
+    _biohtPopulateAnalyteSelector(_biohtRowsCache);
+    _biohtDrawChart();
+  }
+
+  function _renderBiohtSampleCard(rows) {
+    const wrap = document.getElementById("bioht-latest-card");
+    if (!wrap) return;
+    if (!rows.length) {
+      wrap.innerHTML = `<div class="chart-card" style="color:var(--muted);padding:20px;text-align:center">
+        No BioHT samples stored yet. Import a CEDEX BIO HT archive .txt file to get started.</div>`;
+      return;
+    }
+    const sampleId   = rows[0].sample_id || "–";
+    const sampleTime = fmtTime(rows[0].sample_time);
+    const cardSource = rows[0]?.source;
+    const srcBadge   = cardSource === "mast"  ? `<span style="background:#4f8ef722;color:#4f8ef7;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600">MAST</span>` :
+                       cardSource === "local" ? `<span style="background:#22c55e22;color:#22c55e;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600">TXT</span>` : "";
+    let html = `<div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Sample: ${sampleId} ${srcBadge}</span>
+        <span style="color:var(--muted);font-size:12px">${sampleTime}</span>
+      </div>
+      <div class="kpi-row" style="margin:0">`;
+    rows.forEach(r => {
+      const val  = r.result_value !== null ? Number(r.result_value).toPrecision(4) : r.result_text || "–";
+      const unit = r.unit || "";
+      const ok   = !r.status || r.status.trim() === "";
+      html += `<div class="kpi-card" style="cursor:default">
+        <div class="kpi-label">${r.test_abbrev}</div>
+        <div class="kpi-value" style="color:var(--accent);font-size:18px">${val}${unit ? `<span class="kpi-unit" style="font-size:11px"> ${unit}</span>` : ""}</div>
+        <div class="kpi-quality" style="color:${ok ? "var(--good)" : "var(--warn)"}">${ok ? "OK" : r.status}</div>
+      </div>`;
+    });
+    html += `</div></div>`;
+    wrap.innerHTML = html;
+  }
+
+  // Normalize timestamp to ISO 8601 with T separator — required by Luxon/Chart.js time axis.
+  // BioHT TXT timestamps are stored as "YYYY-MM-DD HH:MM:SS" (space separator).
+  function _toISO(ts) { return ts ? ts.replace(" ", "T") : ts; }
+
+  function _biohtDrawChart() {
+    const sel     = document.getElementById("bioht-analyte");
+    const display = sel?.value;
+    const card    = document.getElementById("bioht-chart-card");
+    if (!card) return;
+    if (!display) { card.style.display = "none"; return; }
+
+    // Resolve which underlying test_abbrev values to include
+    const variants = _biohtAnalyteMap[display] || [display];
+    const filtered = _biohtRowsCache.filter(r => variants.includes(r.test_abbrev) && r.result_value !== null);
+    if (!filtered.length) { card.style.display = "none"; return; }
+
+    const unit = filtered[0].unit || "";
+    document.getElementById("bioht-chart-title").textContent =
+      `${display}${unit ? " (" + unit + ")" : ""} — History`;
+    card.style.display = "";
+
+    if (charts["bioht-chart"]) { charts["bioht-chart"].destroy(); delete charts["bioht-chart"]; }
+    const canvas = document.getElementById("bioht-chart");
+    if (!canvas) return;
+
+    const palette = ["#22c55e", "#4f8ef7", "#f59e0b", "#ef4444", "#a855f7"];
+    const consolidating = variants.length > 1;
+
+    // When consolidating, one dataset per variant so they're distinguishable
+    const datasets = consolidating
+      ? variants.map((v, i) => {
+          const pts = filtered.filter(r => r.test_abbrev === v)
+            .sort((a, b) => a.sample_time.localeCompare(b.sample_time))
+            .map(r => ({ x: _toISO(r.sample_time), y: r.result_value, sample_id: r.sample_id, abbrev: r.test_abbrev }));
+          return { label: v, data: pts,
+            borderColor: palette[i % palette.length],
+            backgroundColor: palette[i % palette.length] + "22",
+            borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0 };
+        })
+      : [{
+          label: display,
+          data: [...filtered]
+            .sort((a, b) => a.sample_time.localeCompare(b.sample_time))
+            .map(r => ({ x: _toISO(r.sample_time), y: r.result_value, sample_id: r.sample_id, abbrev: r.test_abbrev })),
+          borderColor: palette[0], backgroundColor: palette[0] + "22",
+          borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0,
+        }];
+
+    charts["bioht-chart"] = new Chart(canvas, {
+      type: "line",
+      data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: consolidating, labels: { color: "#e2e8f0", font: { size: 12 } } },
+          tooltip: { callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: ${Number(ctx.parsed.y).toPrecision(4)} ${unit}`,
+            afterLabel: ctx => ctx.raw.sample_id ? ` Sample: ${ctx.raw.sample_id}` : "",
+          }}
+        },
+        scales: {
+          x: { type: "time", time: { tooltipFormat: "MMM d, HH:mm", displayFormats: { hour: "MMM d HH:mm", day: "MMM d" } }, ticks: { color: "#6b7280", maxTicksLimit: 10 }, grid: { color: "#2a2d3e" } },
+          y: { ticks: { color: "#6b7280" }, grid: { color: "#2a2d3e" }, title: { display: !!unit, text: unit, color: "#6b7280" } }
+        }
+      }
+    });
+  }
+
+  function _renderBiohtTable(rows) {
+    const wrap = document.getElementById("bioht-table-wrap");
+    if (!wrap) return;
+    if (!rows.length) {
+      wrap.innerHTML = `<div style="color:var(--muted);padding:20px;text-align:center;background:var(--surface);border-radius:var(--radius)">
+        No BioHT results in the selected range.</div>`;
+      return;
+    }
+    const bySample = {};
+    rows.forEach(r => {
+      if (!bySample[r.sample_id]) bySample[r.sample_id] = { latest_time: r.sample_time, rows: [] };
+      if (r.sample_time > bySample[r.sample_id].latest_time) bySample[r.sample_id].latest_time = r.sample_time;
+      bySample[r.sample_id].rows.push(r);
+    });
+    const sampleKeys = Object.keys(bySample).sort((a, b) => bySample[b].latest_time.localeCompare(bySample[a].latest_time));
+
+    let html = `<div class="chart-card">
+      <div class="chart-card-header"><span class="chart-card-title">${sampleKeys.length} Sample${sampleKeys.length !== 1 ? "s" : ""}</span></div>
+      <table class="log-table"><thead><tr>
+        <th>Sample ID</th><th>Source</th><th>Time</th><th>Analyte</th><th>Result</th><th>Unit</th><th>Status</th>
+      </tr></thead><tbody>`;
+
+    sampleKeys.forEach(sid => {
+      const m = bySample[sid];
+      const sorted = [...m.rows].sort((a, b) => a.sample_time.localeCompare(b.sample_time));
+      const src = m.rows[0]?.source;
+      const srcCell = src === "mast"  ? `<span style="color:#4f8ef7;font-size:11px;font-weight:600">MAST</span>` :
+                      src === "local" ? `<span style="color:#22c55e;font-size:11px;font-weight:600">TXT</span>`  : "–";
+      sorted.forEach((r, i) => {
+        const val = r.result_value !== null ? Number(r.result_value).toPrecision(4) : r.result_text || "–";
+        const ok  = !r.status || r.status.trim() === "";
+        html += `<tr>
+          ${i === 0 ? `<td rowspan="${sorted.length}"><b>${sid}</b></td><td rowspan="${sorted.length}">${srcCell}</td>` : ""}
+          <td style="color:var(--muted)">${fmtTime(r.sample_time)}</td>
+          <td>${r.test_abbrev}</td>
+          <td style="font-variant-numeric:tabular-nums;font-weight:700">${val}</td>
+          <td>${r.unit || "–"}</td>
+          <td><span style="color:${ok ? "var(--good)" : "var(--warn)"}">${ok ? "✓" : r.status}</span></td>
+        </tr>`;
+      });
+    });
+    html += `</tbody></table></div>`;
+    wrap.innerHTML = html;
+  }
+
+  function _biohtImportTxt() {
+    const input = document.getElementById("bioht-file-input");
+    if (input) input.click();
+  }
+
+  async function _biohtHandleFileImport(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length) return;
+    const info = document.getElementById("bioht-range-info");
+    if (info) { info.textContent = `Importing ${files.length} file${files.length !== 1 ? "s" : ""}…`; info.style.color = "var(--accent)"; }
+    let totalRows = 0, totalInserted = 0, totalSkipped = 0, errors = 0;
+    for (const file of files) {
+      const fd = new FormData(); fd.append("file", file);
+      try {
+        const res = await fetch("/api/bioht/import-txt", { method: "POST", body: fd });
+        if (res.ok) {
+          const d = await res.json();
+          totalRows     += d.rows_parsed || 0;
+          totalInserted += d.inserted    || 0;
+          totalSkipped  += d.skipped     || 0;
+        } else { errors++; }
+      } catch (_) { errors++; }
+    }
+    if (info) {
+      info.textContent = `Import done: ${totalRows} rows, ${totalInserted} new, ${totalSkipped} already existed` +
+        (errors ? ` (${errors} error${errors !== 1 ? "s" : ""})` : "");
+      info.style.color = errors ? "var(--warn)" : "var(--good)";
+    }
+    await _biohtRefresh();
+  }
+
+  // ── Nova Flex2 tab ────────────────────────────────────────
+
+  async function _renderNovaContent() {
+    const analContent = document.getElementById("anal-content");
+    if (!analContent) return;
+
+    const today = new Date();
+    const thirtyAgo = new Date(today - 30 * 24 * 3600 * 1000);
+    const todayStr    = today.toISOString().slice(0, 10);
+    const thirtyStr   = thirtyAgo.toISOString().slice(0, 10);
+
+    analContent.innerHTML = `
+      <div class="analytical-controls" style="flex-wrap:wrap;gap:8px">
+        <span style="color:var(--muted);font-size:12px;align-self:center">From:</span>
+        <input type="date" id="nova-from" class="select" value="${thirtyStr}" style="width:140px" onchange="App._novaRefreshDebounced()">
+        <span style="color:var(--muted);font-size:12px;align-self:center">To:</span>
+        <input type="date" id="nova-to"   class="select" value="${todayStr}"  style="width:140px" onchange="App._novaRefreshDebounced()">
+        <select id="nova-analyte" class="select" style="width:220px" onchange="App._novaDrawChart()">
+          <option value="">Select analyte to chart</option>
+        </select>
+        <input type="text" id="nova-sample-filter" class="select" placeholder="Filter by Sample ID…" style="width:180px" oninput="App._novaFilter()">
+        <button class="btn btn-sm" onclick="App._novaRefresh()">Refresh</button>
+        <button class="btn btn-sm btn-secondary" onclick="App._novaImportCSV()" title="Import one or more Nova BioProfile CSV exports">Import CSV</button>
+        <input type="file" id="nova-file-input" accept=".csv" multiple style="display:none" onchange="App._novaHandleFileImport(event)">
+      </div>
+      <div id="nova-range-info" style="color:var(--muted);font-size:12px;margin:6px 0 14px"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <span style="color:var(--muted);font-size:12px;white-space:nowrap">View sample:</span>
+        <select id="nova-sample-sel" class="select" style="flex:1;max-width:480px" onchange="App._novaSelectSample()">
+          <option value="">Latest measurement</option>
+        </select>
+      </div>
+      <div id="nova-latest-card" style="margin-bottom:16px"></div>
+      <div id="nova-chart-card" class="chart-card" style="display:none;margin-bottom:16px">
+        <div class="chart-card-header">
+          <span class="chart-card-title" id="nova-chart-title">Nova History</span>
+        </div>
+        <div style="position:relative;height:260px"><canvas id="nova-chart"></canvas></div>
+      </div>
+      <div id="nova-table-wrap"></div>`;
+    await _novaRefresh();
+  }
+
+  // Full fetch (called on date change or Refresh button).
+  // Stores unfiltered data, then calls _novaApplyFilters to do the rest.
+  async function _novaRefresh() {
+    const fromEl = document.getElementById("nova-from");
+    const toEl   = document.getElementById("nova-to");
+    const since  = fromEl?.value ? fromEl.value + "T00:00:00" : null;
+    const until  = toEl?.value   ? toEl.value   + "T23:59:59" : null;
+
+    let latestRows = [], histData = [], samples = [];
+    try {
+      const params = new URLSearchParams();
+      if (since) params.set("since", since);
+      if (until) params.set("until", until);
+      const [latRes, histRes, sampRes] = await Promise.all([
+        fetch("/api/nova/latest"),
+        fetch(`/api/nova/results?${params}`),
+        fetch("/api/nova/samples"),
+      ]);
+      if (latRes.ok)  latestRows = (await latRes.json()).data || [];
+      if (histRes.ok) histData   = (await histRes.json()).data || [];
+      if (sampRes.ok) samples    = (await sampRes.json()).data || [];
+    } catch (_) {}
+
+    _novaHistFull = histData;
+    _novaSampFull = samples;
+    _novaApplyFilters(latestRows);
+  }
+
+  // Text-filter only — no network call, just re-filters cached data.
+  function _novaFilter() {
+    _novaApplyFilters(null);
+  }
+
+  // Apply text filter to cached data and re-render everything.
+  // latestRows: pass the /api/nova/latest result on a full refresh; null on text-only change.
+  function _novaApplyFilters(latestRows) {
+    const raw = (document.getElementById("nova-sample-filter")?.value || "").trim().toLowerCase();
+
+    const histData = raw
+      ? _novaHistFull.filter(r => r.sample_id && r.sample_id.toLowerCase().includes(raw))
+      : _novaHistFull;
+
+    const samples = raw
+      ? _novaSampFull.filter(s => s.sample_id && s.sample_id.toLowerCase().includes(raw))
+      : _novaSampFull;
+
+    _novaRowsCache = histData;
+
+    // Range / count info
+    const rangeInfo = document.getElementById("nova-range-info");
+    if (rangeInfo) {
+      const n = new Set(histData.map(r => r.sample_time)).size;
+      if (n === 0) {
+        rangeInfo.textContent = raw
+          ? `No measurements match "${raw}" in the selected date range.`
+          : "No measurements in selected date range.";
+        rangeInfo.style.color = "var(--warn)";
+      } else {
+        rangeInfo.textContent =
+          `${n} measurement${n !== 1 ? "s" : ""} — ${histData.length} data points` +
+          (n < 10 ? " (widen range for ≥10 measurements)" : "");
+        rangeInfo.style.color = n < 10 ? "var(--warn)" : "var(--muted)";
+      }
+    }
+
+    // Sample picker (filtered)
+    _novaPopulateSampleSelector(samples);
+
+    // Latest / selected-sample card
+    const selSample = document.getElementById("nova-sample-sel")?.value;
+    if (selSample) {
+      const cached = histData.filter(r => r.sample_time === selSample);
+      if (cached.length > 0) {
+        _renderNovaLatestCard(cached);
+      } else {
+        // Selected sample is outside current filter — try API
+        fetch(`/api/nova/sample?sample_time=${encodeURIComponent(selSample)}`)
+          .then(r => r.ok ? r.json() : { data: [] })
+          .then(d => _renderNovaLatestCard(d.data || []))
+          .catch(() => _renderNovaLatestCard([]));
+      }
+    } else if (latestRows !== null) {
+      // Full refresh: show the overall latest, or latest in filtered set if filter active
+      if (raw && histData.length > 0) {
+        const latestTs = histData.reduce((a, b) => a.sample_time > b.sample_time ? a : b).sample_time;
+        _renderNovaLatestCard(histData.filter(r => r.sample_time === latestTs));
+      } else {
+        _renderNovaLatestCard(latestRows);
+      }
+    }
+    // (if latestRows===null and no selection, leave the card as-is)
+
+    _novaPopulateAnalyteSelector(histData);
+    _renderNovaTable(histData);
+    _novaDrawChart();
+  }
+
+  function _novaPopulateSampleSelector(samples) {
+    const sel = document.getElementById("nova-sample-sel");
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Latest measurement</option>';
+    samples.forEach(s => {
+      const o = document.createElement("option");
+      o.value = s.sample_time;
+      o.textContent = fmtTime(s.sample_time) + (s.sample_id ? "  —  " + s.sample_id : "");
+      if (s.sample_time === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  function _novaImportCSV() {
+    const input = document.getElementById("nova-file-input");
+    if (input) input.click();
+  }
+
+  async function _novaHandleFileImport(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";   // reset so same file can be re-selected
+    if (!files.length) return;
+
+    const info = document.getElementById("nova-range-info");
+    if (info) {
+      info.textContent = `Importing ${files.length} file${files.length !== 1 ? "s" : ""}…`;
+      info.style.color = "var(--accent)";
+    }
+
+    let totalSamples = 0, totalInserted = 0, totalSkipped = 0, errors = 0;
+
+    for (const file of files) {
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const res = await fetch("/api/nova/import-csv", { method: "POST", body: fd });
+        if (res.ok) {
+          const d = await res.json();
+          totalSamples  += d.samples  || 0;
+          totalInserted += d.inserted || 0;
+          totalSkipped  += d.skipped  || 0;
+        } else {
+          errors++;
+        }
+      } catch (_) { errors++; }
+    }
+
+    if (info) {
+      const msg = `Import done: ${totalSamples} samples, ${totalInserted} new data points, ${totalSkipped} already existed` +
+                  (errors ? ` (${errors} file error${errors !== 1 ? "s" : ""})` : "");
+      info.textContent = msg;
+      info.style.color = errors ? "var(--warn)" : "var(--good)";
+    }
+
+    await _novaRefresh();
+  }
+
+  async function _novaSelectSample() {
+    const sel = document.getElementById("nova-sample-sel");
+    const sampleTime = sel?.value;
+    if (!sampleTime) {
+      // Show latest
+      try {
+        const r = await fetch("/api/nova/latest");
+        _renderNovaLatestCard(r.ok ? (await r.json()).data || [] : []);
+      } catch (_) {}
+      return;
+    }
+    // Try cache first
+    const cached = _novaRowsCache.filter(r => r.sample_time === sampleTime);
+    if (cached.length > 0) { _renderNovaLatestCard(cached); return; }
+    // Fetch from server
+    try {
+      const r = await fetch(`/api/nova/sample?sample_time=${encodeURIComponent(sampleTime)}`);
+      _renderNovaLatestCard(r.ok ? (await r.json()).data || [] : []);
+    } catch (_) { _renderNovaLatestCard([]); }
+  }
+
+  function _renderNovaLatestCard(analytes) {
+    const wrap = document.getElementById("nova-latest-card");
+    if (!wrap) return;
+    if (analytes.length === 0) {
+      wrap.innerHTML = `<div class="chart-card" style="color:var(--muted);padding:20px;text-align:center">
+        No Nova measurements stored yet — the poller runs every 2 minutes and stores new results automatically.</div>`;
+      return;
+    }
+
+    const groupOrder = ["CellDensity","CalculatedResults","Chem","Gas","Osmo"];
+    const groupLabels = { CellDensity: "Cell Density", CalculatedResults: "Calculated Results", Chem: "Chemistry", Gas: "Gas", Osmo: "Osmolality" };
+    const groups = {};
+    analytes.forEach(a => { (groups[a.group_name] = groups[a.group_name] || []).push(a); });
+    const orderedGroups = [...groupOrder.filter(g => groups[g]), ...Object.keys(groups).filter(g => !groupOrder.includes(g))];
+
+    const sampleTime = fmtTime(analytes[0].sample_time);
+    const sampleId   = analytes[0].sample_id || "–";
+
+    let html = `<div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Latest Measurement — ${sampleTime}</span>
+        <span style="color:var(--muted);font-size:12px">Sample: ${sampleId}</span>
+      </div>`;
+
+    orderedGroups.forEach(grp => {
+      html += `<div style="margin-bottom:14px">
+        <p style="font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-bottom:8px">${groupLabels[grp] || grp}</p>
+        <div class="kpi-row" style="margin:0">`;
+      groups[grp].forEach(a => {
+        const val  = a.result_value !== null ? Number(a.result_value).toPrecision(4) : "–";
+        const unit = a.unit ? a.unit.replace(/'/g, "").trim() : "";
+        const ok   = !a.error_status || a.error_status === "None";
+        html += `<div class="kpi-card" style="cursor:default">
+          <div class="kpi-label">${a.display_name}</div>
+          <div class="kpi-value" style="color:var(--accent);font-size:18px">${val}${unit ? `<span class="kpi-unit" style="font-size:11px"> ${unit}</span>` : ""}</div>
+          <div class="kpi-quality" style="color:${ok ? "var(--good)" : "var(--warn)"}">${ok ? "OK" : a.error_status}</div>
+        </div>`;
+      });
+      html += `</div></div>`;
+    });
+
+    html += `</div>`;
+    wrap.innerHTML = html;
+  }
+
+  function _novaPopulateAnalyteSelector(rows) {
+    const sel = document.getElementById("nova-analyte");
+    if (!sel) return;
+    const cur = sel.value;
+    const seen = new Set();
+    const analytes = [];
+    rows.forEach(r => {
+      if (!seen.has(r.analyte)) {
+        seen.add(r.analyte);
+        analytes.push({ analyte: r.analyte, display_name: r.display_name, group_name: r.group_name });
+      }
+    });
+    sel.innerHTML = '<option value="">Select analyte to chart</option>';
+    analytes.sort((a, b) => a.group_name.localeCompare(b.group_name) || a.display_name.localeCompare(b.display_name));
+    analytes.forEach(a => {
+      const o = document.createElement("option");
+      o.value = a.analyte;
+      o.textContent = `${a.display_name} (${a.group_name})`;
+      if (a.analyte === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  function _novaDrawChart() {
+    const sel     = document.getElementById("nova-analyte");
+    const analyte = sel?.value;
+    const chartCard = document.getElementById("nova-chart-card");
+    if (!chartCard) return;
+
+    if (!analyte) { chartCard.style.display = "none"; return; }
+
+    const filtered = _novaRowsCache.filter(r => r.analyte === analyte && r.result_value !== null);
+    if (filtered.length === 0) { chartCard.style.display = "none"; return; }
+
+    const displayName = filtered[0].display_name;
+    const unit = filtered[0].unit ? filtered[0].unit.replace(/'/g, "").trim() : "";
+    document.getElementById("nova-chart-title").textContent = `${displayName}${unit ? " (" + unit + ")" : ""} — History`;
+    chartCard.style.display = "";
+
+    if (charts["nova-chart"]) { charts["nova-chart"].destroy(); delete charts["nova-chart"]; }
+    const canvas = document.getElementById("nova-chart");
+    if (!canvas) return;
+
+    const points = [...filtered]
+      .sort((a, b) => a.sample_time.localeCompare(b.sample_time))
+      .map(r => ({ x: r.sample_time, y: r.result_value, sample_id: r.sample_id }));
+
+    charts["nova-chart"] = new Chart(canvas, {
+      type: "line",
+      data: {
+        datasets: [{
+          label: displayName,
+          data: points,
+          borderColor: "#4f8ef7",
+          backgroundColor: "#4f8ef722",
+          borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: {
+            label: ctx => ` ${displayName}: ${Number(ctx.parsed.y).toPrecision(4)} ${unit}`,
+            afterLabel: ctx => ctx.raw.sample_id ? ` Sample: ${ctx.raw.sample_id}` : "",
+          } }
+        },
+        scales: {
+          x: { type: "time", time: { tooltipFormat: "MMM d, HH:mm", displayFormats: { hour: "MMM d HH:mm", day: "MMM d" } }, ticks: { color: "#6b7280", maxTicksLimit: 10 }, grid: { color: "#2a2d3e" } },
+          y: { ticks: { color: "#6b7280" }, grid: { color: "#2a2d3e" }, title: { display: !!unit, text: unit, color: "#6b7280" } }
+        }
+      }
+    });
+  }
+
+  function _renderNovaTable(rows) {
+    const wrap = document.getElementById("nova-table-wrap");
+    if (!wrap) return;
+    if (rows.length === 0) {
+      wrap.innerHTML = `<div style="color:var(--muted);padding:20px;text-align:center;background:var(--surface);border-radius:var(--radius)">
+        No Nova results in the selected time window.</div>`;
+      return;
+    }
+
+    // Group by sample_time
+    const byTime = {};
+    rows.forEach(r => {
+      if (!byTime[r.sample_time]) byTime[r.sample_time] = { sample_id: r.sample_id, analytes: [] };
+      byTime[r.sample_time].analytes.push(r);
+    });
+    const timeKeys = Object.keys(byTime).sort().reverse();
+
+    let html = `<div class="chart-card">
+      <div class="chart-card-header"><span class="chart-card-title">${timeKeys.length} Measurement${timeKeys.length !== 1 ? "s" : ""}</span></div>
+      <table class="log-table"><thead><tr>
+        <th>Measurement Time</th><th>Sample ID</th><th>Analyte</th><th>Result</th><th>Unit</th><th>Status</th>
+      </tr></thead><tbody>`;
+
+    timeKeys.forEach(ts => {
+      const m = byTime[ts];
+      const tStr = fmtTime(ts);
+      const sorted = [...m.analytes].sort((a, b) => a.group_name.localeCompare(b.group_name) || a.display_name.localeCompare(b.display_name));
+      sorted.forEach((a, i) => {
+        const val  = a.result_value !== null ? Number(a.result_value).toPrecision(4) : "–";
+        const unit = a.unit ? a.unit.replace(/'/g, "").trim() : "–";
+        const ok   = !a.error_status || a.error_status === "None";
+        html += `<tr>
+          ${i === 0 ? `<td rowspan="${sorted.length}"><b>${tStr}</b></td><td rowspan="${sorted.length}" style="color:var(--muted)">${m.sample_id || "–"}</td>` : ""}
+          <td>${a.display_name}</td>
+          <td style="font-variant-numeric:tabular-nums;font-weight:700">${val}</td>
+          <td>${unit}</td>
+          <td><span style="color:${ok ? "var(--good)" : "var(--warn)"}">${ok ? "✓" : a.error_status}</span></td>
+        </tr>`;
+      });
+    });
+
+    html += `</tbody></table></div>`;
+    wrap.innerHTML = html;
+  }
+
+  function _backToOverview() { activeView = "bioreactor"; activeBR = null; buildNav(); renderView(); }
+
+  return { init, openParamModal, closeModal, showConnectionLog, showTagBrowser,
+           _tbBrowse, _tbRead, _backToOverview, showAnalytical,
+           _switchAnalTab,
+           _novaRefresh, _novaRefreshDebounced, _novaFilter, _novaDrawChart,
+           _novaSelectSample, _novaImportCSV, _novaHandleFileImport,
+           _biohtRefresh, _biohtRefreshDebounced, _biohtFilter, _biohtDrawChart, _biohtConsolidateToggle,
+           _biohtSelectSample, _biohtImportTxt, _biohtHandleFileImport };
+})();
+
+document.addEventListener("DOMContentLoaded", App.init);

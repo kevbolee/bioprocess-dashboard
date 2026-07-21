@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bioreactor Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.3/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+</head>
+<body>
+  <header class="top-bar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/>
+      </svg>
+      <span>Bioreactor SCADA Dashboard</span>
+    </div>
+    <div class="top-bar-right">
+      <span id="opc-badge" class="badge badge-pending">OPC: Connecting…</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-section">
+      <p class="sidebar-label">BIOREACTORS</p>
+      <div id="br-nav"></div>
+    </div>
+    <div class="sidebar-section">
+      <p class="sidebar-label">TIME RANGE</p>
+      <select id="time-range" class="select">
+        <option value="1">Last 1 hour</option>
+        <option value="4">Last 4 hours</option>
+        <option value="8">Last 8 hours</option>
+        <option value="24" selected>Last 24 hours</option>
+        <option value="72">Last 3 days</option>
+        <option value="168">Last 7 days</option>
+        <option value="720">Last 30 days</option>
+      </select>
+    </div>
+    <div class="sidebar-section">
+      <p class="sidebar-label">ANALYTICAL</p>
+      <button class="nav-item" id="nav-analytical" onclick="App.showAnalytical()">
+        <span>BioHT / MAST Data</span>
+      </button>
+    </div>
+    <div class="sidebar-section">
+      <p class="sidebar-label">TOOLS</p>
+      <button class="btn btn-sm btn-secondary" style="margin-bottom:6px;width:100%" onclick="App.showConnectionLog()">Connection Log</button>
+      <button class="btn btn-sm btn-secondary" style="width:100%" onclick="App.showTagBrowser()">OPC Tag Browser</button>
+    </div>
+  </nav>
+
+  <main class="content" id="content">
+    <!-- Views rendered here by JS -->
+  </main>
+
+  <!-- Modal -->
+  <div id="modal-overlay" class="modal-overlay hidden" onclick="App.closeModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="modal-title"></h3>
+        <button class="modal-close" onclick="App.closeModal()">✕</button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
