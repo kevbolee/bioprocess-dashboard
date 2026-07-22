@@ -28,3 +28,20 @@ Desktop.ini
 
 # presentation screenshots (added by user)
 presentation/screenshots/
+
+# DASware Connect software installation (binaries, not source)
+Dasbox/Connect/*.dll
+Dasbox/Connect/*.exe
+Dasbox/Connect/*.pdb
+Dasbox/Connect/*.json
+Dasbox/Connect/*.xml
+Dasbox/Connect/*.config
+Scivario/Connect/*.dll
+Scivario/Connect/*.exe
+Scivario/Connect/*.pdb
+Scivario/Connect/*.json
+Scivario/Connect/*.xml
+Scivario/Connect/*.config
+
+# Excel files
+*.xlsx
