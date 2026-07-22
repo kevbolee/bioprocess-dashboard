@@ -55,3 +55,7 @@ Scivario/Connect/*
 !Scivario/Connect/logs/
 Scivario/Connect/logs/*
 !Scivario/Connect/logs/**/*.txt
+
+# DASware ConnectConfig utility (binaries)
+Dasbox/ConnectConfig/
+Scivario/ConnectConfig/
