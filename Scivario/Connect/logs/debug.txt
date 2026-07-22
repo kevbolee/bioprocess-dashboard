@@ -1,0 +1,11 @@
+2026-07-08 11:29:54.2951|INFO |  9|Event service uses data services client assembly v6.7.1.0||DASware.Control.Services.Event|.NET TP Worker
+2026-07-08 11:29:54.5614|INFO |  9|Communication manager started||DASGIP.Control.Framework.Communication.CommunicationManager|.NET TP Worker
+2026-07-08 11:29:54.6647|INFO |  9|OPC server uses toolbox v0.0.0.0||DASGIP.Control.OPC.Server.OpcServer|.NET TP Worker
+2026-07-08 11:29:54.7768|INFO |  9|Starting OPC server, command line:C:\Eppendorf\DASware6\Connect\DWC6.ConnectService.exe||DASGIP.Control.OPC.Server.OpcServer|.NET TP Worker
+2026-07-08 11:29:54.7768|INFO |  9|OPC server started, 192.168.137.8 10.10.10.11:8099||DASGIP.Control.OPC.Server.OpcServer|.NET TP Worker
+2026-07-08 11:29:54.8668|INFO |  9|OPC UA server init, 'DASware connect' application instance||DASGIP.Control.OPC.Server.UA.OPCServerUA|.NET TP Worker
+2026-07-08 11:29:54.9835|INFO |  9|OPC UA server init, 'DASware connect' check certificates||DASGIP.Control.OPC.Server.UA.OPCServerUA|.NET TP Worker
+2026-07-08 11:29:55.1259|INFO |  9|OPC UA server init, base addresses:'opc.tcp://CTPCOG910098:51530/UA/connectServer'||DASGIP.Control.OPC.Server.UA.OPCServerUA|.NET TP Worker
+2026-07-08 11:29:56.2533|INFO |  9|OPC UA server started||DASGIP.Control.OPC.Server.UA.OPCServerUA|.NET TP Worker
+2026-07-08 11:29:56.2533|INFO |  9|OPC UA server uses assembly v1.5.374.158||DASGIP.Control.OPC.Server.UA.OPCServerUA|.NET TP Worker
+2026-07-08 11:29:56.2533|ERROR|  9|No license available for DASware connect||DASware.Connect.Services.ConnectService|.NET TP Worker
