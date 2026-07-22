@@ -45,3 +45,13 @@ Scivario/Connect/*.config
 
 # Excel files
 *.xlsx
+
+# DASware Connect full installation — ignore everything except logs
+Dasbox/Connect/*
+!Dasbox/Connect/logs/
+Dasbox/Connect/logs/*
+!Dasbox/Connect/logs/**/*.txt
+Scivario/Connect/*
+!Scivario/Connect/logs/
+Scivario/Connect/logs/*
+!Scivario/Connect/logs/**/*.txt
