@@ -92,7 +92,7 @@ const App = (() => {
     const span = document.createElement("span");
     span.textContent = label;
     btn.appendChild(span);
-    btn.addEventListener("click", () => { activeBR = brId; buildNav(); renderView(); });
+    btn.addEventListener("click", () => { activeBR = brId; activeView = "bioreactor"; buildNav(); renderView(); });
     return btn;
   }
 
@@ -394,13 +394,19 @@ const App = (() => {
       },
     };
 
-    await Plotly.newPlot(divEl, [trace], layout, {
-      responsive: true,
-      displaylogo: false,
-      scrollZoom: true,
-      modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"],
-    });
+    try {
+      await Plotly.newPlot(divEl, [trace], layout, {
+        responsive: true,
+        displaylogo: false,
+        scrollZoom: true,
+        modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"],
+      });
+    } catch (err) {
+      console.error(`Plotly.newPlot failed for ${divId}:`, err);
+      return;
+    }
 
+    if (!document.getElementById(divId)) return;
     charts[divId] = true;
     if (divId !== "modal-chart") {
       _activePlotDivIds.push(divId);
