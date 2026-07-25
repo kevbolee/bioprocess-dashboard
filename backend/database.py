@@ -94,6 +94,36 @@ def init_db():
                 ON nova_results (sample_time, group_name, analyte);
             CREATE INDEX IF NOT EXISTS idx_nova_ts
                 ON nova_results (sample_time);
+
+            CREATE TABLE IF NOT EXISTS vicell_results (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                sample_id           TEXT,
+                sample_date         TEXT,
+                viability_pct       REAL,
+                total_cells_per_ml  REAL,
+                viable_cells_per_ml REAL,
+                avg_diameter_um     REAL,
+                avg_circularity     REAL,
+                total_cells         INTEGER,
+                viable_cells        INTEGER,
+                dilution_factor     REAL,
+                cell_type           TEXT,
+                source_file         TEXT,
+                imported_at         TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_vicell_unique
+                ON vicell_results (sample_id, sample_date);
+            CREATE INDEX IF NOT EXISTS idx_vicell_date
+                ON vicell_results (sample_date);
+
+            CREATE TABLE IF NOT EXISTS vicell_file_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path   TEXT NOT NULL UNIQUE,
+                file_mtime  REAL NOT NULL,
+                imported_at TEXT NOT NULL,
+                inserted    INTEGER DEFAULT 0,
+                skipped     INTEGER DEFAULT 0
+            );
         """)
 
 
@@ -388,3 +418,129 @@ def get_bioht_latest() -> list[dict]:
             (row["sample_id"],),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Vi-CELL XR cell counter results
+# ---------------------------------------------------------------------------
+
+def insert_vicell_results(rows: list[dict]) -> tuple[int, int]:
+    """Insert Vi-CELL results; returns (inserted, skipped) counts."""
+    imported_at = datetime.utcnow().isoformat()
+    inserted = 0
+    skipped = 0
+    with get_conn() as conn:
+        for r in rows:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO vicell_results
+                   (sample_id, sample_date, viability_pct,
+                    total_cells_per_ml, viable_cells_per_ml,
+                    avg_diameter_um, avg_circularity,
+                    total_cells, viable_cells, dilution_factor,
+                    cell_type, source_file, imported_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    r.get("sample_id"), r.get("sample_date"),
+                    r.get("viability_pct"),
+                    r.get("total_cells_per_ml"), r.get("viable_cells_per_ml"),
+                    r.get("avg_diameter_um"), r.get("avg_circularity"),
+                    r.get("total_cells"), r.get("viable_cells"),
+                    r.get("dilution_factor"), r.get("cell_type"),
+                    r.get("source_file"), imported_at,
+                ),
+            )
+            if cur.rowcount:
+                inserted += 1
+            else:
+                skipped += 1
+    return inserted, skipped
+
+
+_VICELL_COLS = """sample_id, sample_date, viability_pct,
+                  total_cells_per_ml, viable_cells_per_ml,
+                  avg_diameter_um, avg_circularity,
+                  total_cells, viable_cells, dilution_factor,
+                  cell_type, source_file, imported_at"""
+
+
+def get_vicell_results(days_back: int = 90, sample_id_filter: str = None,
+                       since: str = None, until: str = None) -> list[dict]:
+    """Return Vi-CELL rows newest first.
+
+    If since/until (ISO strings) are provided they take precedence over days_back.
+    sample_id_filter is a substring match (case-insensitive).
+    """
+    if since and until:
+        base_where = "sample_date >= ? AND sample_date <= ?"
+        base_params: list = [since, until]
+    else:
+        cutoff = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
+        base_where = "sample_date >= ? OR sample_date IS NULL"
+        base_params = [cutoff]
+
+    if sample_id_filter:
+        where = f"({base_where}) AND LOWER(sample_id) LIKE ?"
+        params = base_params + [f"%{sample_id_filter.lower()}%"]
+    else:
+        where = f"({base_where})"
+        params = base_params
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT {_VICELL_COLS} FROM vicell_results WHERE {where} ORDER BY sample_date DESC",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_vicell_latest() -> dict | None:
+    """Return the single most recent Vi-CELL measurement row, or None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT {_VICELL_COLS} FROM vicell_results ORDER BY sample_date DESC LIMIT 1"
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_vicell_samples(since: str = None, until: str = None) -> list[dict]:
+    """Return distinct (sample_id, sample_date) rows newest first, optionally date-filtered."""
+    if since and until:
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT sample_id, sample_date
+                   FROM vicell_results
+                   WHERE sample_date >= ? AND sample_date <= ?
+                   ORDER BY sample_date DESC""",
+                (since, until),
+            ).fetchall()
+    else:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT sample_id, sample_date FROM vicell_results ORDER BY sample_date DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_vicell_file_log() -> dict[str, float]:
+    """Return {file_path: file_mtime} for all previously imported files."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT file_path, file_mtime FROM vicell_file_log"
+        ).fetchall()
+    return {r["file_path"]: r["file_mtime"] for r in rows}
+
+
+def upsert_vicell_file_log(file_path: str, file_mtime: float, inserted: int, skipped: int):
+    """Record or update a successfully imported file."""
+    imported_at = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO vicell_file_log (file_path, file_mtime, imported_at, inserted, skipped)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(file_path) DO UPDATE SET
+                 file_mtime  = excluded.file_mtime,
+                 imported_at = excluded.imported_at,
+                 inserted    = inserted + excluded.inserted,
+                 skipped     = skipped  + excluded.skipped""",
+            (file_path, file_mtime, imported_at, inserted, skipped),
+        )

@@ -8,7 +8,7 @@ const App = (() => {
   let CONFIG = null;          // from /api/config
   let latestData = {};        // bioreactor_id -> {param -> {value,quality,timestamp}}
   let activeBR = null;        // currently selected bioreactor id (null = overview)
-  let activeView = "bioreactor"; // 'bioreactor' | 'analytical' | 'mast-status' | 'sample-history'
+  let activeView = "bioreactor"; // 'bioreactor' | 'analytical' | 'vicell' | 'mast-status' | 'sample-history'
   let timeRangeHours = 24;
   let ws = null;
   let wsRetryDelay = 2000;
@@ -170,9 +170,11 @@ const App = (() => {
   function renderView() {
     destroyCharts();
     document.getElementById("nav-analytical").classList.toggle("active", activeView === "analytical");
+    document.getElementById("nav-vicell").classList.toggle("active", activeView === "vicell");
     document.getElementById("nav-mast-status").classList.toggle("active", activeView === "mast-status");
     document.getElementById("nav-sample-history").classList.toggle("active", activeView === "sample-history");
     if (activeView === "analytical")    { renderAnalytical();   return; }
+    if (activeView === "vicell")        { renderVicell();        return; }
     if (activeView === "mast-status")   { renderMastStatus();   return; }
     if (activeView === "sample-history"){ renderSampleHistory(); return; }
     if (activeBR === null) renderOverview();
@@ -181,7 +183,8 @@ const App = (() => {
   }
 
   function updateView() {
-    if (activeView === "analytical") return; // analytical view refreshes on demand only
+    if (activeView === "analytical") return;
+    if (activeView === "vicell") return;
     if (activeBR === null) updateOverviewValues();
     else updateDetailKPIs(activeBR);
     updateCharts();
@@ -620,6 +623,7 @@ Quick guide:
         <input type="text" id="bioht-sample-filter" class="select" placeholder="Filter by Sample ID…" style="width:180px" oninput="App._biohtFilter()">
         <button class="btn btn-sm" onclick="App._biohtRefresh()">Refresh</button>
         <button class="btn btn-sm btn-secondary" onclick="App._biohtImportTxt()" title="Import CEDEX BIO HT archive .txt files">Import TXT</button>
+        <button class="btn btn-sm btn-secondary" onclick="App._biohtExportXlsx()" title="Download an xlsx file matching the Cedex_Data template">Export xlsx</button>
         <input type="file" id="bioht-file-input" accept=".txt" multiple style="display:none" onchange="App._biohtHandleFileImport(event)">
       </div>
       <div style="display:flex;gap:16px;align-items:center;margin:4px 0 2px">
@@ -1016,6 +1020,7 @@ Quick guide:
         <input type="text" id="nova-sample-filter" class="select" placeholder="Filter by Sample ID…" style="width:180px" oninput="App._novaFilter()">
         <button class="btn btn-sm" onclick="App._novaRefresh()">Refresh</button>
         <button class="btn btn-sm btn-secondary" onclick="App._novaImportCSV()" title="Import one or more Nova BioProfile CSV exports">Import CSV</button>
+        <button class="btn btn-sm btn-secondary" onclick="App._novaExportXlsx()" title="Download an xlsx file matching the Flex_2_Data template">Export xlsx</button>
         <input type="file" id="nova-file-input" accept=".csv" multiple style="display:none" onchange="App._novaHandleFileImport(event)">
       </div>
       <div id="nova-range-info" style="color:var(--muted);font-size:12px;margin:6px 0 14px"></div>
@@ -2044,15 +2049,430 @@ Quick guide:
 
   function _backToOverview() { activeView = "bioreactor"; activeBR = null; buildNav(); renderView(); }
 
+  // ── Vi-CELL Cell Counter ────────────────────────────────────
+
+  let _vicellHistFull  = [];  // all rows from current date range (unfiltered)
+  let _vicellRowsCache = [];  // after text filter applied
+  let _vicellSampFull  = [];  // all (sample_id, sample_date) pairs in range
+  let _vicellLatest    = null;
+  let _vicellDebounce  = null;
+
+  const _VICELL_METRICS = [
+    { key: "viability_pct",       label: "Viability",           unit: "%"         },
+    { key: "viable_cells_per_ml", label: "VCD",                 unit: "×10⁶/ml"  },
+    { key: "total_cells_per_ml",  label: "TCD",                 unit: "×10⁶/ml"  },
+    { key: "avg_diameter_um",     label: "Avg Diameter",        unit: "µm"        },
+    { key: "avg_circularity",     label: "Avg Circularity",     unit: ""          },
+  ];
+
+  async function showVicell() {
+    activeView = "vicell";
+    activeBR = null;
+    buildNav();
+    renderView();
+  }
+
+  async function renderVicell() {
+    const today    = new Date();
+    const yearAgo  = new Date(today - 365 * 24 * 3600 * 1000);
+    const todayStr = today.toISOString().slice(0, 10);
+    const yearStr  = yearAgo.toISOString().slice(0, 10);
+
+    content.innerHTML = `
+      <div class="analytical-controls" style="flex-wrap:wrap;gap:8px">
+        <span style="color:var(--muted);font-size:12px;align-self:center">From:</span>
+        <input type="date" id="vicell-from" class="select" value="${yearStr}" style="width:140px"
+          onchange="App._vicellRefreshDebounced()">
+        <span style="color:var(--muted);font-size:12px;align-self:center">To:</span>
+        <input type="date" id="vicell-to" class="select" value="${todayStr}" style="width:140px"
+          onchange="App._vicellRefreshDebounced()">
+        <select id="vicell-metric" class="select" style="width:200px" onchange="App._vicellDrawChart()">
+          <option value="">Select metric to chart</option>
+          ${_VICELL_METRICS.map(m => `<option value="${m.key}">${m.label}${m.unit ? " (" + m.unit + ")" : ""}</option>`).join("")}
+        </select>
+        <input type="text" id="vicell-filter" class="select" placeholder="Filter by Sample ID…"
+          style="width:180px" oninput="App._vicellFilter()">
+        <button class="btn btn-sm" onclick="App._vicellRefresh()">Refresh</button>
+        <button class="btn btn-sm btn-secondary" onclick="App._vicellImportClick()"
+          title="Import one or more Vi-CELL XR xlsx exports">Import xlsx</button>
+        <button class="btn btn-sm btn-secondary" onclick="App._vicellExportXlsx()"
+          title="Download an xlsx file matching the ViCell_data template">Export xlsx</button>
+        <input type="file" id="vicell-file-input" accept=".xlsx" multiple style="display:none"
+          onchange="App._vicellHandleFileImport(event)">
+      </div>
+      <div id="vicell-range-info" style="color:var(--muted);font-size:12px;margin:6px 0 14px"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <span style="color:var(--muted);font-size:12px;white-space:nowrap">View sample:</span>
+        <select id="vicell-sample-sel" class="select" style="flex:1;max-width:480px"
+          onchange="App._vicellSelectSample()">
+          <option value="">Latest measurement</option>
+        </select>
+      </div>
+      <div id="vicell-latest-card" style="margin-bottom:16px"></div>
+      <div id="vicell-chart-card" class="chart-card" style="display:none;margin-bottom:16px">
+        <div class="chart-card-header">
+          <span class="chart-card-title" id="vicell-chart-title">Vi-CELL History</span>
+        </div>
+        <div style="position:relative;height:260px"><canvas id="vicell-chart"></canvas></div>
+      </div>
+      <div id="vicell-table-wrap"></div>`;
+
+    await _vicellRefresh();
+  }
+
+  function _vicellImportClick() {
+    const inp = document.getElementById("vicell-file-input");
+    if (inp) inp.click();
+  }
+
+  function _vicellRefreshDebounced() {
+    clearTimeout(_vicellDebounce);
+    _vicellDebounce = setTimeout(_vicellRefresh, 600);
+  }
+
+  async function _vicellRefresh() {
+    const fromEl = document.getElementById("vicell-from");
+    const toEl   = document.getElementById("vicell-to");
+    const since  = fromEl?.value ? fromEl.value + "T00:00:00" : null;
+    const until  = toEl?.value   ? toEl.value   + "T23:59:59" : null;
+
+    let results = [], samples = [], latest = null;
+    try {
+      const params = new URLSearchParams();
+      if (since) params.set("since", since);
+      if (until) params.set("until", until);
+      const [resResp, sampResp, latResp] = await Promise.all([
+        fetch(`/api/vicell/results?${params}`),
+        fetch(`/api/vicell/samples?${params}`),
+        fetch("/api/vicell/latest"),
+      ]);
+      if (resResp.ok)  results = (await resResp.json()).results  || [];
+      if (sampResp.ok) samples = (await sampResp.json()).samples || [];
+      if (latResp.ok)  latest  = (await latResp.json()).result   || null;
+    } catch (_) {}
+
+    _vicellHistFull = results;
+    _vicellSampFull = samples;
+    _vicellLatest   = latest;
+    _vicellApplyFilter(latest);
+  }
+
+  function _vicellFilter() {
+    _vicellApplyFilter(null);
+  }
+
+  function _vicellApplyFilter(latestRow) {
+    const raw = (document.getElementById("vicell-filter")?.value || "").trim().toLowerCase();
+
+    const rows = raw
+      ? _vicellHistFull.filter(r => (r.sample_id || "").toLowerCase().includes(raw))
+      : _vicellHistFull;
+
+    const samples = raw
+      ? _vicellSampFull.filter(s => (s.sample_id || "").toLowerCase().includes(raw))
+      : _vicellSampFull;
+
+    _vicellRowsCache = rows;
+
+    const rangeInfo = document.getElementById("vicell-range-info");
+    if (rangeInfo) {
+      if (!rows.length) {
+        rangeInfo.textContent = raw
+          ? `No measurements match "${raw}" in the selected date range.`
+          : "No measurements in selected date range.";
+        rangeInfo.style.color = "var(--warn)";
+      } else {
+        rangeInfo.textContent = `${rows.length} measurement${rows.length !== 1 ? "s" : ""}`;
+        rangeInfo.style.color = "var(--muted)";
+      }
+    }
+
+    _vicellPopulateSampleSelector(samples);
+
+    const selEl = document.getElementById("vicell-sample-sel");
+    const selKey = selEl?.value;
+    if (selKey) {
+      const [sid, sdate] = selKey.split("|");
+      const hit = rows.find(r => r.sample_id === sid && r.sample_date === sdate);
+      _renderVicellCard(hit || null);
+    } else if (latestRow !== null) {
+      if (raw && rows.length > 0) {
+        _renderVicellCard(rows[0]);
+      } else {
+        _renderVicellCard(_vicellLatest);
+      }
+    }
+
+    _renderVicellTable(rows);
+    _vicellDrawChart();
+  }
+
+  function _vicellPopulateSampleSelector(samples) {
+    const sel = document.getElementById("vicell-sample-sel");
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Latest measurement</option>';
+    samples.forEach(s => {
+      const o = document.createElement("option");
+      o.value = `${s.sample_id}|${s.sample_date}`;
+      const label = s.sample_id || "Unknown";
+      const dt = s.sample_date ? fmtTime(s.sample_date) : "no date";
+      o.textContent = `${label}  —  ${dt}`;
+      if (o.value === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  function _vicellSelectSample() {
+    const sel = document.getElementById("vicell-sample-sel");
+    const key = sel?.value;
+    if (!key) {
+      _renderVicellCard(_vicellLatest);
+      return;
+    }
+    const [sid, sdate] = key.split("|");
+    const hit = _vicellRowsCache.find(r => r.sample_id === sid && r.sample_date === sdate);
+    _renderVicellCard(hit || null);
+  }
+
+  function _renderVicellCard(row) {
+    const wrap = document.getElementById("vicell-latest-card");
+    if (!wrap) return;
+    if (!row) {
+      wrap.innerHTML = `<div class="chart-card" style="color:var(--muted);padding:20px;text-align:center">
+        No Vi-CELL measurements stored yet — use Import xlsx to load data.</div>`;
+      return;
+    }
+
+    const fmtV  = v => v == null ? "—" : Number(v).toFixed(2);
+    const fmtV1 = v => v == null ? "—" : Number(v).toFixed(1);
+    const viab  = row.viability_pct;
+    const viabColor = viab == null ? "var(--accent)"
+      : viab >= 90 ? "var(--good)"
+      : viab >= 75 ? "#f5a623"
+      : "var(--bad)";
+
+    const kpis = [
+      { label: "Viability",       val: viab == null ? "—" : viab.toFixed(1) + "%",   color: viabColor },
+      { label: "VCD (×10⁶/ml)",  val: fmtV(row.viable_cells_per_ml),                color: "var(--accent)" },
+      { label: "TCD (×10⁶/ml)",  val: fmtV(row.total_cells_per_ml),                 color: "var(--accent)" },
+      { label: "Avg Diam (µm)",   val: fmtV1(row.avg_diameter_um),                   color: "var(--accent)" },
+      { label: "Circularity",     val: fmtV(row.avg_circularity),                    color: "var(--accent)" },
+      { label: "Dilution",        val: row.dilution_factor != null ? row.dilution_factor : "—", color: "var(--text)" },
+    ];
+
+    const ts = row.sample_date ? fmtTime(row.sample_date) : "unknown date";
+    const sid = row.sample_id || "–";
+    const ct  = row.cell_type ? `  •  ${row.cell_type}` : "";
+
+    let html = `<div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Measurement — ${ts}</span>
+        <span style="color:var(--muted);font-size:12px">Sample: ${sid}${ct}</span>
+      </div>
+      <div class="kpi-row" style="margin:0">`;
+
+    kpis.forEach(k => {
+      html += `<div class="kpi-card" style="cursor:default">
+        <div class="kpi-label">${k.label}</div>
+        <div class="kpi-value" style="color:${k.color};font-size:20px">${k.val}</div>
+      </div>`;
+    });
+
+    html += `</div></div>`;
+    wrap.innerHTML = html;
+  }
+
+  function _vicellDrawChart() {
+    const metricSel = document.getElementById("vicell-metric");
+    const metricKey = metricSel?.value;
+    const chartCard = document.getElementById("vicell-chart-card");
+    if (!chartCard) return;
+
+    if (!metricKey) { chartCard.style.display = "none"; return; }
+
+    const meta = _VICELL_METRICS.find(m => m.key === metricKey);
+    const points = _vicellRowsCache
+      .filter(r => r[metricKey] != null && r.sample_date)
+      .map(r => ({ x: r.sample_date, y: r[metricKey], sample_id: r.sample_id }))
+      .sort((a, b) => a.x.localeCompare(b.x));
+
+    if (!points.length) { chartCard.style.display = "none"; return; }
+
+    const unit = meta?.unit || "";
+    const label = meta?.label || metricKey;
+    document.getElementById("vicell-chart-title").textContent =
+      `${label}${unit ? " (" + unit + ")" : ""} — History`;
+    chartCard.style.display = "";
+
+    if (charts["vicell-chart"]) { charts["vicell-chart"].destroy(); delete charts["vicell-chart"]; }
+    const canvas = document.getElementById("vicell-chart");
+    if (!canvas) return;
+
+    charts["vicell-chart"] = new Chart(canvas, {
+      type: "line",
+      data: {
+        datasets: [{
+          label,
+          data: points,
+          borderColor: "#4f8ef7",
+          backgroundColor: "#4f8ef722",
+          borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: {
+            label: ctx => ` ${label}: ${Number(ctx.parsed.y).toPrecision(4)}${unit ? " " + unit : ""}`,
+            afterLabel: ctx => ctx.raw.sample_id ? ` Sample: ${ctx.raw.sample_id}` : "",
+          }}
+        },
+        scales: {
+          x: { type: "time", time: { tooltipFormat: "MMM d, HH:mm", displayFormats: { hour: "MMM d HH:mm", day: "MMM d" } },
+               ticks: { color: "#6b7280", maxTicksLimit: 10 }, grid: { color: "#2a2d3e" } },
+          y: { ticks: { color: "#6b7280" }, grid: { color: "#2a2d3e" },
+               title: { display: !!unit, text: unit, color: "#6b7280" } }
+        }
+      }
+    });
+  }
+
+  function _renderVicellTable(rows) {
+    const wrap = document.getElementById("vicell-table-wrap");
+    if (!wrap) return;
+    if (!rows.length) {
+      wrap.innerHTML = `<div style="color:var(--muted);padding:20px;text-align:center;background:var(--surface);border-radius:var(--radius)">
+        No Vi-CELL results in the selected time window.</div>`;
+      return;
+    }
+
+    const fmtV  = v => v == null ? "—" : Number(v).toFixed(2);
+    const fmtV1 = v => v == null ? "—" : Number(v).toFixed(1);
+    const viabFmt = v => v == null ? "—" : Number(v).toFixed(1) + "%";
+    const viabColor = v => v == null ? "var(--text)" : v >= 90 ? "var(--good)" : v >= 75 ? "#f5a623" : "var(--bad)";
+
+    let html = `<div class="chart-card">
+      <div class="chart-card-header"><span class="chart-card-title">${rows.length} Measurement${rows.length !== 1 ? "s" : ""}</span></div>
+      <table class="log-table"><thead><tr>
+        <th>Date</th><th>Sample ID</th><th>Viability</th>
+        <th>VCD (×10⁶/ml)</th><th>TCD (×10⁶/ml)</th>
+        <th>Avg Diam (µm)</th><th>Circ.</th><th>Cell Type</th><th>Dilution</th>
+      </tr></thead><tbody>`;
+
+    rows.forEach(r => {
+      const dt = r.sample_date ? fmtTime(r.sample_date) : "—";
+      html += `<tr>
+        <td><b>${dt}</b></td>
+        <td style="color:var(--muted)">${r.sample_id || "—"}</td>
+        <td style="font-weight:700;color:${viabColor(r.viability_pct)}">${viabFmt(r.viability_pct)}</td>
+        <td style="font-variant-numeric:tabular-nums">${fmtV(r.viable_cells_per_ml)}</td>
+        <td style="font-variant-numeric:tabular-nums">${fmtV(r.total_cells_per_ml)}</td>
+        <td style="font-variant-numeric:tabular-nums">${fmtV1(r.avg_diameter_um)}</td>
+        <td style="font-variant-numeric:tabular-nums">${fmtV(r.avg_circularity)}</td>
+        <td style="color:var(--muted)">${r.cell_type || "—"}</td>
+        <td style="color:var(--muted)">${r.dilution_factor != null ? r.dilution_factor : "—"}</td>
+      </tr>`;
+    });
+
+    html += `</tbody></table></div>`;
+    wrap.innerHTML = html;
+  }
+
+  async function _vicellHandleFileImport(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length) return;
+
+    const info = document.getElementById("vicell-range-info");
+    if (info) {
+      info.textContent = `Importing ${files.length} file${files.length !== 1 ? "s" : ""}…`;
+      info.style.color = "var(--accent)";
+    }
+
+    let totalInserted = 0, totalSkipped = 0, errors = 0;
+    for (const file of files) {
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const res = await fetch("/api/vicell/import-xlsx", { method: "POST", body: fd });
+        if (res.ok) {
+          const d = await res.json();
+          totalInserted += d.inserted || 0;
+          totalSkipped  += d.skipped  || 0;
+        } else { errors++; }
+      } catch (_) { errors++; }
+    }
+
+    if (info) {
+      const msg = `Import done: ${totalInserted} new result${totalInserted !== 1 ? "s" : ""}` +
+        (totalSkipped ? `, ${totalSkipped} duplicate${totalSkipped !== 1 ? "s" : ""} skipped` : "") +
+        (errors ? ` (${errors} file error${errors !== 1 ? "s" : ""})` : "");
+      info.textContent = msg;
+      info.style.color = errors ? "var(--warn)" : "var(--good)";
+    }
+
+    await _vicellRefresh();
+  }
+
+  // ── xlsx exports (analytical templates) ───────────────────
+  // Triggers a browser download from a backend endpoint. Uses a hidden anchor
+  // so the current view isn't navigated away from.
+  function _downloadUrl(url, filename) {
+    const a = document.createElement("a");
+    a.href = url;
+    if (filename) a.download = filename;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function _rangeParams(fromId, toId) {
+    const params = new URLSearchParams();
+    const f = document.getElementById(fromId)?.value;
+    const t = document.getElementById(toId)?.value;
+    if (f) params.set("since", f + "T00:00:00");
+    if (t) params.set("until", t + "T23:59:59");
+    return params;
+  }
+
+  function _vicellExportXlsx() {
+    const params = _rangeParams("vicell-from", "vicell-to");
+    const filt = (document.getElementById("vicell-filter")?.value || "").trim();
+    if (filt) params.set("sample_id", filt);
+    const qs = params.toString();
+    _downloadUrl("/api/vicell/export-xlsx" + (qs ? "?" + qs : ""));
+  }
+
+  function _novaExportXlsx() {
+    const params = _rangeParams("nova-from", "nova-to");
+    const qs = params.toString();
+    _downloadUrl("/api/nova/export-xlsx" + (qs ? "?" + qs : ""));
+  }
+
+  function _biohtExportXlsx() {
+    const params = _rangeParams("bioht-from", "bioht-to");
+    const qs = params.toString();
+    _downloadUrl("/api/bioht/export-xlsx" + (qs ? "?" + qs : ""));
+  }
+
   return { init, openParamModal, closeModal, showConnectionLog, showTagBrowser,
            _tbBrowse, _tbRead, _backToOverview, showAnalytical,
            _switchAnalTab,
            _novaRefresh, _novaRefreshDebounced, _novaFilter, _novaDrawChart,
            _novaSelectSample, _novaImportCSV, _novaHandleFileImport,
+           _novaExportXlsx,
            _biohtRefresh, _biohtRefreshDebounced, _biohtFilter, _biohtDrawChart, _biohtConsolidateToggle,
            _biohtSelectSample, _biohtImportTxt, _biohtHandleFileImport,
+           _biohtExportXlsx,
            showMastStatus, _mastStatusRefresh,
-           showSampleHistory, _shRefresh, _shFilter };
+           showSampleHistory, _shRefresh, _shFilter,
+           showVicell, _vicellRefresh, _vicellRefreshDebounced,
+           _vicellFilter, _vicellSelectSample, _vicellDrawChart,
+           _vicellImportClick, _vicellHandleFileImport, _vicellExportXlsx };
 })();
 
 document.addEventListener("DOMContentLoaded", App.init);

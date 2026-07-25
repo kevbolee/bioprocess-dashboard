@@ -11,6 +11,10 @@
     "url": "opc.tcp://flexiiinterface:59888/NovaBiomedical",
     "poll_interval_seconds": 120
   },
+  "vicell": {
+    "watch_folder": "",
+    "poll_interval_seconds": 60
+  },
   "opc": {
     "protocol": "SIMULATE",
     "poll_interval_seconds": 5,

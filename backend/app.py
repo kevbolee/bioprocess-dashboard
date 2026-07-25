@@ -11,20 +11,24 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import database as db
 import bioht_importer
+import excel_exporter
 import gilson_client
 import nova_client
 import nova_importer
 import opc_client
 import sql_client
+import vicell_importer
+import vicell_watcher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -113,6 +117,11 @@ async def startup():
     logger.info("OPC collection task started (protocol=%s)", opc_client.PROTOCOL)
     asyncio.create_task(nova_client.collect_forever())
     logger.info("Nova Flex2 collector started (url=%s)", nova_client.NOVA_URL)
+    if vicell_watcher.WATCH_FOLDER:
+        asyncio.create_task(vicell_watcher.collect_forever())
+        logger.info("Vi-CELL watcher started (folder=%s)", vicell_watcher.WATCH_FOLDER)
+    else:
+        logger.info("Vi-CELL watcher disabled (watch_folder not set in config.json)")
     asyncio.create_task(_prewarm_sql())
 
 
@@ -584,6 +593,84 @@ async def api_nova_import_csv(file: UploadFile = File(...)):
     content = await file.read()
     result = nova_importer.import_csv_bytes(content, source=file.filename)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Analytical result exports — Excel files matching the users' template layout
+# (see excelexport/dataexample.xlsx).
+# ---------------------------------------------------------------------------
+
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx_response(data: bytes, filename: str) -> Response:
+    return Response(
+        content=data,
+        media_type=_XLSX_MIME,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/vicell/export-xlsx")
+async def api_vicell_export_xlsx(since: Optional[str] = None,
+                                 until: Optional[str] = None,
+                                 sample_id: Optional[str] = None):
+    """Return a ViCell_data workbook (formulas + one row per measurement)."""
+    data = excel_exporter.build_vicell_xlsx(since=since, until=until,
+                                            sample_id_filter=sample_id)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return _xlsx_response(data, f"ViCell_data_{stamp}.xlsx")
+
+
+@app.get("/api/nova/export-xlsx")
+async def api_nova_export_xlsx(since: Optional[str] = None,
+                               until: Optional[str] = None):
+    """Return a Flex_2_Data workbook (formulas + one row per Nova measurement)."""
+    data = excel_exporter.build_nova_xlsx(since=since, until=until)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return _xlsx_response(data, f"Flex_2_Data_{stamp}.xlsx")
+
+
+@app.get("/api/bioht/export-xlsx")
+async def api_bioht_export_xlsx(since: Optional[str] = None,
+                                until: Optional[str] = None):
+    """Return a Cedex_Data workbook (formulas + one row per BioHT test result)."""
+    data = excel_exporter.build_cedex_xlsx(since=since, until=until)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return _xlsx_response(data, f"Cedex_Data_{stamp}.xlsx")
+
+
+# ---------------------------------------------------------------------------
+# Vi-CELL XR cell counter
+# ---------------------------------------------------------------------------
+
+@app.post("/api/vicell/import-xlsx")
+async def api_vicell_import_xlsx(file: UploadFile = File(...)):
+    """Import a Vi-CELL XR xlsx export. Duplicates are silently ignored."""
+    content = await file.read()
+    result = vicell_importer.import_xlsx_bytes(content, source=file.filename)
+    return result
+
+
+@app.get("/api/vicell/results")
+async def api_vicell_results(days: int = 730, sample_id: Optional[str] = None,
+                              since: Optional[str] = None, until: Optional[str] = None):
+    if days > 3650:
+        days = 3650
+    rows = db.get_vicell_results(days_back=days, sample_id_filter=sample_id,
+                                  since=since, until=until)
+    return {"results": rows, "count": len(rows)}
+
+
+@app.get("/api/vicell/latest")
+async def api_vicell_latest():
+    row = db.get_vicell_latest()
+    return {"result": row}
+
+
+@app.get("/api/vicell/samples")
+async def api_vicell_samples(since: Optional[str] = None, until: Optional[str] = None):
+    return {"samples": db.get_vicell_samples(since=since, until=until)}
 
 
 @app.get("/api/opc/browse-ua")

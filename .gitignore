@@ -26,6 +26,9 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Office temp/lock files
+~$*
+
 # presentation screenshots (added by user)
 presentation/screenshots/
 
@@ -53,7 +56,6 @@ Scivario/Connect/*.config
 NOVAexport/
 BioHTExport/
 vicellexport/
-excelexport/
 Dasbox/
 Scivario/
 MAST/
