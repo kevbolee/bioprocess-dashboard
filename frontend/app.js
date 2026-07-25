@@ -12,7 +12,9 @@ const App = (() => {
   let timeRangeHours = 24;
   let ws = null;
   let wsRetryDelay = 2000;
-  let charts = {};            // chart instances keyed by canvas id
+  let charts = {};            // Plotly div IDs registered for cleanup: {divId: true}
+  let _activePlotDivIds = []; // divs on the current bioreactor detail view (x-axis sync scope)
+  let _syncingXAxis = false;  // re-entry guard for cross-chart sync
   let historyCache = {};      // key: `${br}/${param}/${hours}` -> [{timestamp,value}]
   let selectedParam = null;   // for detail view KPI highlight
   let _novaRowsCache = [];     // text+date filtered rows (used by chart)
@@ -326,6 +328,7 @@ const App = (() => {
   function renderCharts(brId) {
     const grid = document.getElementById(`charts-grid-${brId}`);
     if (!grid) return;
+    _activePlotDivIds = [];   // clear sync scope for this view
     grid.innerHTML = "";
     Object.entries(CONFIG.parameters).forEach(([key, cfg]) => {
       const card = document.createElement("div");
@@ -335,13 +338,13 @@ const App = (() => {
           <span class="chart-card-title">${cfg.label} <span style="color:var(--muted);font-weight:400">(${cfg.unit})</span></span>
           <button class="btn btn-sm btn-secondary" onclick="App.openParamModal('${brId}','${key}')">Expand</button>
         </div>
-        <div class="chart-wrap"><canvas id="chart-${brId}-${key}"></canvas></div>`;
+        <div class="chart-wrap"><div id="chart-${brId}-${key}" style="height:200px"></div></div>`;
       grid.appendChild(card);
       loadAndRenderChart(brId, key, `chart-${brId}-${key}`, 200);
     });
   }
 
-  async function loadAndRenderChart(brId, param, canvasId, height) {
+  async function loadAndRenderChart(brId, param, divId, height) {
     const cacheKey = `${brId}/${param}/${timeRangeHours}`;
     if (!historyCache[cacheKey]) {
       const resp = await fetch(`/api/history/${brId}/${param}?hours=${timeRangeHours}`);
@@ -350,73 +353,114 @@ const App = (() => {
     }
     const data = historyCache[cacheKey];
     const cfg = CONFIG.parameters[param];
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) return;
+    const divEl = document.getElementById(divId);
+    if (!divEl) return;
 
-    const points = data.map(r => ({ x: r.timestamp, y: r.value }));
-    const chart = new Chart(canvas, {
-      type: "line",
-      data: {
-        datasets: [{
-          data: points,
-          borderColor: cfg.color,
-          backgroundColor: cfg.color + "22",
-          borderWidth: 1.5,
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          fill: true,
-          tension: 0.3,
-        }]
+    const trace = {
+      x: data.map(r => r.timestamp),
+      y: data.map(r => r.value),
+      type: "scatter",
+      mode: "lines",
+      name: cfg.label,
+      line: { color: cfg.color, width: 1.5, shape: "spline", smoothing: 0.3 },
+      fill: "tozeroy",
+      fillcolor: cfg.color + "22",
+      hovertemplate: "<b>%{y:.3g}</b> " + cfg.unit + "<br>%{x|%H:%M:%S}<extra></extra>",
+    };
+
+    const layout = {
+      paper_bgcolor: "transparent",
+      plot_bgcolor: "transparent",
+      margin: { t: 6, r: 10, b: 36, l: 52 },
+      showlegend: false,
+      height: height,
+      xaxis: {
+        type: "date",
+        color: "#6b7280",
+        gridcolor: "#2a2d3e",
+        linecolor: "#2a2d3e",
+        zerolinecolor: "#2a2d3e",
+        tickfont: { color: "#6b7280", size: 10 },
+        automargin: true,
       },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: ctx => ` ${fmtVal(ctx.parsed.y)} ${cfg.unit}`
-            }
-          }
-        },
-        scales: {
-          x: {
-            type: "time",
-            time: { tooltipFormat: "HH:mm:ss", displayFormats: { minute: "HH:mm", hour: "HH:mm", day: "MMM d" } },
-            ticks: { color: "#6b7280", maxTicksLimit: 8 },
-            grid: { color: "#2a2d3e" }
-          },
-          y: {
-            ticks: { color: "#6b7280" },
-            grid: { color: "#2a2d3e" },
-            suggestedMin: cfg.min,
-            suggestedMax: cfg.max,
-          }
-        }
-      }
+      yaxis: {
+        color: "#6b7280",
+        gridcolor: "#2a2d3e",
+        linecolor: "#2a2d3e",
+        zerolinecolor: "#2a2d3e",
+        tickfont: { color: "#6b7280", size: 10 },
+        range: [cfg.min, cfg.max],
+        automargin: true,
+      },
+    };
+
+    await Plotly.newPlot(divEl, [trace], layout, {
+      responsive: true,
+      displaylogo: false,
+      scrollZoom: true,
+      modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"],
     });
-    charts[canvasId] = chart;
+
+    charts[divId] = true;
+    if (divId !== "modal-chart") {
+      _activePlotDivIds.push(divId);
+      divEl.on("plotly_relayout", e => _syncBioreactorXAxis(divEl, e));
+    }
+  }
+
+  function _syncBioreactorXAxis(sourceDivEl, e) {
+    if (_syncingXAxis) return;
+    let update;
+    if (e["xaxis.range[0]"] !== undefined) {
+      update = { "xaxis.range[0]": e["xaxis.range[0]"], "xaxis.range[1]": e["xaxis.range[1]"] };
+    } else if (e["xaxis.autorange"]) {
+      update = { "xaxis.autorange": true };
+    } else {
+      return;
+    }
+    _syncingXAxis = true;
+    _activePlotDivIds.forEach(id => {
+      if (id === sourceDivEl.id) return;
+      const el = document.getElementById(id);
+      if (el && el.data) Plotly.relayout(el, update).catch(() => {});
+    });
+    setTimeout(() => { _syncingXAxis = false; }, 50);
   }
 
   function updateCharts() {
-    Object.entries(charts).forEach(([canvasId, chart]) => {
-      // parse id: chart-{brId}-{param}
-      const parts = canvasId.replace("chart-", "").split("-");
+    Object.keys(charts).forEach(divId => {
+      if (divId === "modal-chart") return;
+      const el = document.getElementById(divId);
+      if (!el || !el.data) return;
+      const parts = divId.replace("chart-", "").split("-");
       const brId = parts[0];
       const param = parts.slice(1).join("-");
       const cacheKey = `${brId}/${param}/${timeRangeHours}`;
       const data = historyCache[cacheKey];
       if (!data) return;
-      chart.data.datasets[0].data = data.map(r => ({ x: r.timestamp, y: r.value }));
-      chart.update("none");
+      const cfg = CONFIG.parameters[param];
+      const trace = {
+        x: data.map(r => r.timestamp),
+        y: data.map(r => r.value),
+        type: "scatter",
+        mode: "lines",
+        name: cfg.label,
+        line: { color: cfg.color, width: 1.5, shape: "spline", smoothing: 0.3 },
+        fill: "tozeroy",
+        fillcolor: cfg.color + "22",
+        hovertemplate: "<b>%{y:.3g}</b> " + cfg.unit + "<br>%{x|%H:%M:%S}<extra></extra>",
+      };
+      Plotly.react(el, [trace], el.layout).catch(() => {});
     });
   }
 
   function destroyCharts() {
-    Object.values(charts).forEach(c => c.destroy());
+    Object.keys(charts).forEach(divId => {
+      const el = document.getElementById(divId);
+      if (el) Plotly.purge(el);
+    });
     charts = {};
+    _activePlotDivIds = [];
   }
 
   // ── Modal: expanded chart ──────────────────────────────────
@@ -425,14 +469,16 @@ const App = (() => {
     const br = CONFIG.bioreactors.find(b => b.id === brId);
     document.getElementById("modal-title").textContent = `${br.name} — ${cfg.label}`;
     document.getElementById("modal-body").innerHTML =
-      `<div class="chart-full"><canvas id="modal-chart"></canvas></div>`;
+      `<div class="chart-full"><div id="modal-chart" style="height:400px"></div></div>`;
     document.getElementById("modal-overlay").classList.remove("hidden");
     await loadAndRenderChart(brId, param, "modal-chart", 400);
   }
 
   function closeModal() {
     document.getElementById("modal-overlay").classList.add("hidden");
-    if (charts["modal-chart"]) { charts["modal-chart"].destroy(); delete charts["modal-chart"]; }
+    const modalEl = document.getElementById("modal-chart");
+    if (modalEl) Plotly.purge(modalEl);
+    delete charts["modal-chart"];
     document.getElementById("modal-body").innerHTML = "";
   }
 
@@ -632,7 +678,7 @@ Quick guide:
         <div class="chart-card-header">
           <span class="chart-card-title" id="bioht-chart-title">BioHT History</span>
         </div>
-        <div style="position:relative;height:260px"><canvas id="bioht-chart"></canvas></div>
+        <div id="bioht-chart" style="height:280px"></div>
       </div>
       <div id="bioht-table-wrap"></div>`;
     await _biohtRefresh();
@@ -901,8 +947,7 @@ Quick guide:
     wrap.innerHTML = html;
   }
 
-  // Normalize timestamp to ISO 8601 with T separator — required by Luxon/Chart.js time axis.
-  // BioHT TXT timestamps are stored as "YYYY-MM-DD HH:MM:SS" (space separator).
+  // Normalize timestamp: Plotly accepts "YYYY-MM-DD HH:MM:SS" but prefers ISO 8601.
   function _toISO(ts) { return ts ? ts.replace(" ", "T") : ts; }
 
   function _biohtDrawChart() {
@@ -912,7 +957,6 @@ Quick guide:
     if (!card) return;
     if (!display) { card.style.display = "none"; return; }
 
-    // Resolve which underlying test_abbrev values to include
     const variants = _biohtAnalyteMap[display] || [display];
     const filtered = _biohtRowsCache.filter(r => variants.includes(r.test_abbrev) && r.result_value !== null);
     if (!filtered.length) { card.style.display = "none"; return; }
@@ -922,52 +966,66 @@ Quick guide:
       `${display}${unit ? " (" + unit + ")" : ""} — History`;
     card.style.display = "";
 
-    if (charts["bioht-chart"]) { charts["bioht-chart"].destroy(); delete charts["bioht-chart"]; }
-    const canvas = document.getElementById("bioht-chart");
-    if (!canvas) return;
+    const divEl = document.getElementById("bioht-chart");
+    if (!divEl) return;
 
     const palette = ["#22c55e", "#4f8ef7", "#f59e0b", "#ef4444", "#a855f7"];
     const consolidating = variants.length > 1;
 
-    // When consolidating, one dataset per variant so they're distinguishable
-    const datasets = consolidating
+    const traces = consolidating
       ? variants.map((v, i) => {
-          const pts = filtered.filter(r => r.test_abbrev === v)
-            .sort((a, b) => a.sample_time.localeCompare(b.sample_time))
-            .map(r => ({ x: _toISO(r.sample_time), y: r.result_value, sample_id: r.sample_id, abbrev: r.test_abbrev }));
-          return { label: v, data: pts,
-            borderColor: palette[i % palette.length],
-            backgroundColor: palette[i % palette.length] + "22",
-            borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0 };
+          const pts = [...filtered.filter(r => r.test_abbrev === v)]
+            .sort((a, b) => a.sample_time.localeCompare(b.sample_time));
+          return {
+            x: pts.map(r => _toISO(r.sample_time)),
+            y: pts.map(r => r.result_value),
+            customdata: pts.map(r => r.sample_id || ""),
+            type: "scatter", mode: "lines+markers", name: v,
+            line: { color: palette[i % palette.length], width: 2 },
+            marker: { color: palette[i % palette.length], size: 7 },
+            hovertemplate: v + ": <b>%{y:.4g}</b> " + unit +
+              "<br>Sample: %{customdata}<br>%{x|%b %d, %H:%M}<extra></extra>",
+          };
         })
       : [{
-          label: display,
-          data: [...filtered]
-            .sort((a, b) => a.sample_time.localeCompare(b.sample_time))
-            .map(r => ({ x: _toISO(r.sample_time), y: r.result_value, sample_id: r.sample_id, abbrev: r.test_abbrev })),
-          borderColor: palette[0], backgroundColor: palette[0] + "22",
-          borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0,
+          x: [...filtered].sort((a, b) => a.sample_time.localeCompare(b.sample_time))
+            .map(r => _toISO(r.sample_time)),
+          y: [...filtered].sort((a, b) => a.sample_time.localeCompare(b.sample_time))
+            .map(r => r.result_value),
+          customdata: [...filtered].sort((a, b) => a.sample_time.localeCompare(b.sample_time))
+            .map(r => r.sample_id || ""),
+          type: "scatter", mode: "lines+markers", name: display,
+          line: { color: palette[0], width: 2 },
+          marker: { color: palette[0], size: 7 },
+          hovertemplate: display + ": <b>%{y:.4g}</b> " + unit +
+            "<br>Sample: %{customdata}<br>%{x|%b %d, %H:%M}<extra></extra>",
         }];
 
-    charts["bioht-chart"] = new Chart(canvas, {
-      type: "line",
-      data: { datasets },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: consolidating, labels: { color: "#e2e8f0", font: { size: 12 } } },
-          tooltip: { callbacks: {
-            label: ctx => ` ${ctx.dataset.label}: ${Number(ctx.parsed.y).toPrecision(4)} ${unit}`,
-            afterLabel: ctx => ctx.raw.sample_id ? ` Sample: ${ctx.raw.sample_id}` : "",
-          }}
-        },
-        scales: {
-          x: { type: "time", time: { tooltipFormat: "MMM d, HH:mm", displayFormats: { hour: "MMM d HH:mm", day: "MMM d" } }, ticks: { color: "#6b7280", maxTicksLimit: 10 }, grid: { color: "#2a2d3e" } },
-          y: { ticks: { color: "#6b7280" }, grid: { color: "#2a2d3e" }, title: { display: !!unit, text: unit, color: "#6b7280" } }
-        }
-      }
-    });
+    const layout = {
+      paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+      margin: { t: 8, r: 12, b: 40, l: 60 },
+      showlegend: consolidating, height: 280,
+      legend: { font: { color: "#e2e8f0", size: 12 }, bgcolor: "transparent" },
+      xaxis: {
+        type: "date", color: "#6b7280", gridcolor: "#2a2d3e",
+        linecolor: "#2a2d3e", tickfont: { color: "#6b7280", size: 11 }, automargin: true,
+      },
+      yaxis: {
+        color: "#6b7280", gridcolor: "#2a2d3e", linecolor: "#2a2d3e",
+        tickfont: { color: "#6b7280", size: 11 }, automargin: true,
+        title: unit ? { text: unit, font: { color: "#6b7280", size: 11 } } : undefined,
+      },
+    };
+
+    const cfg = { responsive: true, displaylogo: false, scrollZoom: true,
+      modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"] };
+
+    if (divEl.data) {
+      Plotly.react(divEl, traces, layout, cfg);
+    } else {
+      Plotly.newPlot(divEl, traces, layout, cfg);
+      charts["bioht-chart"] = true;
+    }
   }
 
   function _renderBiohtTable(rows) {
@@ -1086,7 +1144,7 @@ Quick guide:
         <div class="chart-card-header">
           <span class="chart-card-title" id="nova-chart-title">Nova History</span>
         </div>
-        <div style="position:relative;height:260px"><canvas id="nova-chart"></canvas></div>
+        <div id="nova-chart" style="height:280px"></div>
       </div>
       <div id="nova-table-wrap"></div>`;
     await _novaRefresh();
@@ -1388,48 +1446,53 @@ Quick guide:
     if (!analyte) { chartCard.style.display = "none"; return; }
 
     const filtered = _novaRowsCache.filter(r => r.analyte === analyte && r.result_value !== null);
-    if (filtered.length === 0) { chartCard.style.display = "none"; return; }
+    if (!filtered.length) { chartCard.style.display = "none"; return; }
 
     const displayName = filtered[0].display_name;
     const unit = filtered[0].unit ? filtered[0].unit.replace(/'/g, "").trim() : "";
-    document.getElementById("nova-chart-title").textContent = `${displayName}${unit ? " (" + unit + ")" : ""} — History`;
+    document.getElementById("nova-chart-title").textContent =
+      `${displayName}${unit ? " (" + unit + ")" : ""} — History`;
     chartCard.style.display = "";
 
-    if (charts["nova-chart"]) { charts["nova-chart"].destroy(); delete charts["nova-chart"]; }
-    const canvas = document.getElementById("nova-chart");
-    if (!canvas) return;
+    const divEl = document.getElementById("nova-chart");
+    if (!divEl) return;
 
-    const points = [...filtered]
-      .sort((a, b) => a.sample_time.localeCompare(b.sample_time))
-      .map(r => ({ x: r.sample_time, y: r.result_value, sample_id: r.sample_id }));
+    const pts = [...filtered].sort((a, b) => a.sample_time.localeCompare(b.sample_time));
+    const trace = {
+      x: pts.map(r => r.sample_time),
+      y: pts.map(r => r.result_value),
+      customdata: pts.map(r => r.sample_id || ""),
+      type: "scatter", mode: "lines+markers", name: displayName,
+      line: { color: "#4f8ef7", width: 2 },
+      marker: { color: "#4f8ef7", size: 7 },
+      hovertemplate: displayName + ": <b>%{y:.4g}</b>" + (unit ? " " + unit : "") +
+        "<br>Sample: %{customdata}<br>%{x|%b %d, %H:%M}<extra></extra>",
+    };
 
-    charts["nova-chart"] = new Chart(canvas, {
-      type: "line",
-      data: {
-        datasets: [{
-          label: displayName,
-          data: points,
-          borderColor: "#4f8ef7",
-          backgroundColor: "#4f8ef722",
-          borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0,
-        }]
+    const layout = {
+      paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+      margin: { t: 8, r: 12, b: 40, l: 60 },
+      showlegend: false, height: 280,
+      xaxis: {
+        type: "date", color: "#6b7280", gridcolor: "#2a2d3e",
+        linecolor: "#2a2d3e", tickfont: { color: "#6b7280", size: 11 }, automargin: true,
       },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: {
-            label: ctx => ` ${displayName}: ${Number(ctx.parsed.y).toPrecision(4)} ${unit}`,
-            afterLabel: ctx => ctx.raw.sample_id ? ` Sample: ${ctx.raw.sample_id}` : "",
-          } }
-        },
-        scales: {
-          x: { type: "time", time: { tooltipFormat: "MMM d, HH:mm", displayFormats: { hour: "MMM d HH:mm", day: "MMM d" } }, ticks: { color: "#6b7280", maxTicksLimit: 10 }, grid: { color: "#2a2d3e" } },
-          y: { ticks: { color: "#6b7280" }, grid: { color: "#2a2d3e" }, title: { display: !!unit, text: unit, color: "#6b7280" } }
-        }
-      }
-    });
+      yaxis: {
+        color: "#6b7280", gridcolor: "#2a2d3e", linecolor: "#2a2d3e",
+        tickfont: { color: "#6b7280", size: 11 }, automargin: true,
+        title: unit ? { text: unit, font: { color: "#6b7280", size: 11 } } : undefined,
+      },
+    };
+
+    const cfg = { responsive: true, displaylogo: false, scrollZoom: true,
+      modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"] };
+
+    if (divEl.data) {
+      Plotly.react(divEl, [trace], layout, cfg);
+    } else {
+      Plotly.newPlot(divEl, [trace], layout, cfg);
+      charts["nova-chart"] = true;
+    }
   }
 
   function _renderNovaTable(rows) {
@@ -2226,7 +2289,7 @@ Quick guide:
         <div class="chart-card-header">
           <span class="chart-card-title" id="vicell-chart-title">Vi-CELL History</span>
         </div>
-        <div style="position:relative;height:260px"><canvas id="vicell-chart"></canvas></div>
+        <div id="vicell-chart" style="height:280px"></div>
       </div>
       <div id="vicell-table-wrap"></div>`;
 
@@ -2405,52 +2468,56 @@ Quick guide:
     if (!metricKey) { chartCard.style.display = "none"; return; }
 
     const meta = _VICELL_METRICS.find(m => m.key === metricKey);
-    const points = _vicellRowsCache
+    const pts = _vicellRowsCache
       .filter(r => r[metricKey] != null && r.sample_date)
-      .map(r => ({ x: r.sample_date, y: r[metricKey], sample_id: r.sample_id }))
-      .sort((a, b) => a.x.localeCompare(b.x));
+      .sort((a, b) => a.sample_date.localeCompare(b.sample_date));
 
-    if (!points.length) { chartCard.style.display = "none"; return; }
+    if (!pts.length) { chartCard.style.display = "none"; return; }
 
-    const unit = meta?.unit || "";
+    const unit  = meta?.unit || "";
     const label = meta?.label || metricKey;
     document.getElementById("vicell-chart-title").textContent =
       `${label}${unit ? " (" + unit + ")" : ""} — History`;
     chartCard.style.display = "";
 
-    if (charts["vicell-chart"]) { charts["vicell-chart"].destroy(); delete charts["vicell-chart"]; }
-    const canvas = document.getElementById("vicell-chart");
-    if (!canvas) return;
+    const divEl = document.getElementById("vicell-chart");
+    if (!divEl) return;
 
-    charts["vicell-chart"] = new Chart(canvas, {
-      type: "line",
-      data: {
-        datasets: [{
-          label,
-          data: points,
-          borderColor: "#4f8ef7",
-          backgroundColor: "#4f8ef722",
-          borderWidth: 2, pointRadius: 6, pointHoverRadius: 8, fill: false, tension: 0,
-        }]
+    const trace = {
+      x: pts.map(r => r.sample_date),
+      y: pts.map(r => r[metricKey]),
+      customdata: pts.map(r => r.sample_id || ""),
+      type: "scatter", mode: "lines+markers", name: label,
+      line: { color: "#4f8ef7", width: 2 },
+      marker: { color: "#4f8ef7", size: 7 },
+      hovertemplate: label + ": <b>%{y:.4g}</b>" + (unit ? " " + unit : "") +
+        "<br>Sample: %{customdata}<br>%{x|%b %d, %H:%M}<extra></extra>",
+    };
+
+    const layout = {
+      paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+      margin: { t: 8, r: 12, b: 40, l: 60 },
+      showlegend: false, height: 280,
+      xaxis: {
+        type: "date", color: "#6b7280", gridcolor: "#2a2d3e",
+        linecolor: "#2a2d3e", tickfont: { color: "#6b7280", size: 11 }, automargin: true,
       },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: {
-            label: ctx => ` ${label}: ${Number(ctx.parsed.y).toPrecision(4)}${unit ? " " + unit : ""}`,
-            afterLabel: ctx => ctx.raw.sample_id ? ` Sample: ${ctx.raw.sample_id}` : "",
-          }}
-        },
-        scales: {
-          x: { type: "time", time: { tooltipFormat: "MMM d, HH:mm", displayFormats: { hour: "MMM d HH:mm", day: "MMM d" } },
-               ticks: { color: "#6b7280", maxTicksLimit: 10 }, grid: { color: "#2a2d3e" } },
-          y: { ticks: { color: "#6b7280" }, grid: { color: "#2a2d3e" },
-               title: { display: !!unit, text: unit, color: "#6b7280" } }
-        }
-      }
-    });
+      yaxis: {
+        color: "#6b7280", gridcolor: "#2a2d3e", linecolor: "#2a2d3e",
+        tickfont: { color: "#6b7280", size: 11 }, automargin: true,
+        title: unit ? { text: unit, font: { color: "#6b7280", size: 11 } } : undefined,
+      },
+    };
+
+    const cfg = { responsive: true, displaylogo: false, scrollZoom: true,
+      modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"] };
+
+    if (divEl.data) {
+      Plotly.react(divEl, [trace], layout, cfg);
+    } else {
+      Plotly.newPlot(divEl, [trace], layout, cfg);
+      charts["vicell-chart"] = true;
+    }
   }
 
   function _renderVicellTable(rows) {

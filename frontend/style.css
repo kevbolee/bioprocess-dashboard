@@ -111,7 +111,14 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 }
 .chart-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .chart-card-title { font-size: 14px; font-weight: 600; }
-.chart-wrap { position: relative; height: 200px; }
+.chart-wrap { position: relative; }
+
+/* Plotly modebar — dark theme */
+.modebar { background: rgba(22, 24, 38, 0.85) !important; border-radius: 4px !important; }
+.modebar-btn path { fill: #6b7280 !important; }
+.modebar-btn:hover path { fill: #e2e8f0 !important; }
+.modebar-btn.active path { fill: var(--accent) !important; }
+.js-plotly-plot .plotly .modebar { top: 2px !important; right: 4px !important; }
 
 /* Full-width chart modal */
 .chart-full { position: relative; height: 400px; }
