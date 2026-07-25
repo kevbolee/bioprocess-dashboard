@@ -17,7 +17,7 @@ except ImportError:
     pass
 
 SERVERS = [
-    {"name": "DASware-Scivario", "url": "opc.tcp://CTPCOG910098:51530/UA/connectServer"},
+    {"name": "DASware-Scivario", "url": "opc.tcp://CTPCOG910098:51510/UA/DasgipCoreServer"},
     {"name": "DASware-DASbox",   "url": "opc.tcp://CTPCMO508723:51510/UA/DasgipCoreServer"},
 ]
 
