@@ -16,8 +16,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SERVERS = [
-    {"name": "Scivario", "url": "opc.tcp://CTPCOG910098:51530/UA/connectServer"},
-    # DASbox uses DasgipCoreServer on port 51510 (confirmed from dasboxOPC.xml)
+    # Both confirmed from OPC XML configs (scivarioOPC.txt / dasboxOPC.xml):
+    # same URL format, same domain structure, same pH casing
+    {"name": "Scivario", "url": "opc.tcp://CTPCOG910098:51510/UA/DasgipCoreServer"},
     {"name": "DASbox",   "url": "opc.tcp://CTPCMO508723:51510/UA/DasgipCoreServer"},
 ]
 

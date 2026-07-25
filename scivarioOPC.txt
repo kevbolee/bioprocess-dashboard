@@ -1,0 +1,294 @@
+<?xml version="1.0"?>
+<Root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" Hierarchy="Tree">
+  <Servers>
+    <Server Name="Server1" Url="opc.tcp://localhost:51510/UA/DasgipCoreServer" NumberOfUnits="24" Enabled="true" NumberOfPumps="11" NumberOfBalances="4" NumberOfInternals="26" NumberOfExternals="26" NumberOfOfflines="26" UpdateRate="1000" ValidationRate="30000" Simulated="false" PlantAlias="Plant1" RaiseEvents="false" BadQuality="BAD">
+      <Domain Name="Root" Enabled="true">
+        <SubDomains>
+          <Domain Name="pH" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Alarm" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="DO" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Alarm" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="Temperature" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Alarm" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="Redox" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Alarm" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="Level" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Alarm" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="ConductivityA" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="ConductivityB" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="Volume" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="Agitation" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="Gassing" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="Overlay" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="Offgas" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="Turbidity" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="Reactor" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="Illumination" Enabled="true">
+            <SubDomains>
+              <Domain Name="ActuatorA" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="ActuatorB" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="ActuatorC" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="Pressure" Enabled="true">
+            <SubDomains>
+              <Domain Name="Sensor" Enabled="true">
+                <SubDomains />
+              </Domain>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="UserLoopA" Enabled="true">
+            <SubDomains>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="UserLoopB" Enabled="true">
+            <SubDomains>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="UserLoopC" Enabled="true">
+            <SubDomains>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="UserLoopD" Enabled="true">
+            <SubDomains>
+              <Domain Name="Controller" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="ExternalValues" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="InternalValues" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="OfflineValues" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="PumpA" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpB" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpC" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpD" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpE" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpF" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpG" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpH" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpI" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpJ" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="PumpK" Enabled="true">
+            <SubDomains>
+              <Domain Name="Actuator" Enabled="true">
+                <SubDomains />
+              </Domain>
+            </SubDomains>
+          </Domain>
+          <Domain Name="BalanceA" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="BalanceB" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="BalanceC" Enabled="true">
+            <SubDomains />
+          </Domain>
+          <Domain Name="BalanceD" Enabled="true">
+            <SubDomains />
+          </Domain>
+        </SubDomains>
+      </Domain>
+      <UnitAliases>
+        <string>Unit1</string>
+        <string>Unit2</string>
+        <string>Unit3</string>
+        <string>Unit4</string>
+        <string>Unit5</string>
+        <string>Unit6</string>
+        <string>Unit7</string>
+        <string>Unit8</string>
+        <string>Unit9</string>
+        <string>Unit10</string>
+        <string>Unit11</string>
+        <string>Unit12</string>
+        <string>Unit13</string>
+        <string>Unit14</string>
+        <string>Unit15</string>
+        <string>Unit16</string>
+        <string>Unit17</string>
+        <string>Unit18</string>
+        <string>Unit19</string>
+        <string>Unit20</string>
+        <string>Unit21</string>
+        <string>Unit22</string>
+        <string>Unit23</string>
+        <string>Unit24</string>
+      </UnitAliases>
+    </Server>
+  </Servers>
+</Root>
