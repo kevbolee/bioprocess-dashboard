@@ -648,25 +648,61 @@ Quick guide:
     if (since) params.set("since", since);
     if (until) params.set("until", until);
 
-    // Show loading state
     const rangeInfo = document.getElementById("bioht-range-info");
     const loadBar   = document.getElementById("bioht-load-bar");
-    if (rangeInfo) {
-      rangeInfo.innerHTML = `<span class="spinner-inline"></span> Querying MAST SQL Server…`;
-      rangeInfo.style.color = "var(--muted)";
-    }
-    if (loadBar) loadBar.innerHTML = `<div class="progress-track"><div class="progress-fill indeterminate"></div></div>`;
 
-    // Fetch row count (fast) and data (slow) simultaneously; update message when count arrives
+    const loadStart   = Date.now();
+    const lastLoadMs  = +(localStorage.getItem("bioht_last_load_ms") || 0);
+    let   countResult = null;
+
+    const updateLoadingUI = () => {
+      const elapsed = (Date.now() - loadStart) / 1000;
+      const elapsedStr = elapsed.toFixed(1) + "s elapsed";
+      let msg = `<span class="spinner-inline"></span> `;
+      let barHtml;
+
+      if (countResult) {
+        const total = countResult.total || 0;
+        msg += `Loading ${total.toLocaleString()} entries`;
+        if (countResult.mast > 0)
+          msg += ` <span style="color:var(--muted)">(${countResult.local.toLocaleString()} local + ${countResult.mast.toLocaleString()} MAST)</span>`;
+        msg += ` — ${elapsedStr}`;
+        if (lastLoadMs > 0) {
+          const remSec = Math.max(0, Math.round((lastLoadMs - (Date.now() - loadStart)) / 1000));
+          if (remSec > 1) msg += ` <span style="color:var(--accent)">~${remSec}s remaining</span>`;
+        }
+        // Time-based fill: use last known duration as 100%; cap at 95% so bar doesn't finish early
+        const pct = lastLoadMs > 0
+          ? Math.min(95, (elapsed / (lastLoadMs / 1000)) * 100)
+          : null;
+        barHtml = pct !== null
+          ? `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`
+          : `<div class="progress-track"><div class="progress-fill indeterminate"></div></div>`;
+      } else {
+        msg += `Querying MAST SQL Server — ${elapsedStr}`;
+        if (lastLoadMs > 0) {
+          const remSec = Math.max(0, Math.round((lastLoadMs - (Date.now() - loadStart)) / 1000));
+          if (remSec > 1) msg += ` <span style="color:var(--accent)">~${remSec}s remaining</span>`;
+        }
+        const pct = lastLoadMs > 0
+          ? Math.min(95, (elapsed / (lastLoadMs / 1000)) * 100)
+          : null;
+        barHtml = pct !== null
+          ? `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`
+          : `<div class="progress-track"><div class="progress-fill indeterminate"></div></div>`;
+      }
+
+      if (rangeInfo) { rangeInfo.innerHTML = msg; rangeInfo.style.color = "var(--muted)"; }
+      if (loadBar)   loadBar.innerHTML = barHtml;
+    };
+
+    updateLoadingUI();
+    const ticker = setInterval(updateLoadingUI, 500);
+
+    // Fetch count (fast) and full data (slow) in parallel
     fetch(`/api/bioht/count?${params}`)
       .then(r => r.ok ? r.json() : null)
-      .then(c => {
-        if (!c) return;
-        const total = c.total || 0;
-        if (rangeInfo && rangeInfo.querySelector(".spinner-inline")) {
-          rangeInfo.innerHTML = `<span class="spinner-inline"></span> Loading ${total.toLocaleString()} entries (${c.local.toLocaleString()} local + ${c.mast.toLocaleString()} MAST)…`;
-        }
-      })
+      .then(c => { if (c) countResult = c; })
       .catch(() => {});
 
     let latestRows = [], histData = [], samples = [], mastOnline = false;
@@ -683,10 +719,10 @@ Quick guide:
       if (sampRes.ok) samples = (await sampRes.json()).data || [];
     } catch (_) {}
 
-    // Clear loading bar
+    clearInterval(ticker);
+    localStorage.setItem("bioht_last_load_ms", Date.now() - loadStart);
     if (loadBar) loadBar.innerHTML = "";
 
-    // Derive latest from merged data
     if (histData.length > 0) {
       const newestTime = histData.reduce((a, b) => (a.sample_time > b.sample_time ? a : b)).sample_time;
       const newestId   = histData.find(r => r.sample_time === newestTime)?.sample_id || "";
@@ -696,7 +732,6 @@ Quick guide:
     _biohtHistFull = histData;
     _biohtSampFull = samples;
 
-    // Show MAST connectivity status
     const statusEl = document.getElementById("bioht-mast-status");
     if (statusEl) {
       statusEl.textContent = mastOnline ? "MAST: online" : "MAST: offline (showing local TXT data only)";
@@ -1069,24 +1104,42 @@ Quick guide:
     if (since) params.set("since", since);
     if (until) params.set("until", until);
 
-    // Show loading state
     const rangeInfo = document.getElementById("nova-range-info");
     const loadBar   = document.getElementById("nova-load-bar");
-    if (rangeInfo) {
-      rangeInfo.innerHTML = `<span class="spinner-inline"></span> Loading Nova results…`;
-      rangeInfo.style.color = "var(--muted)";
-    }
-    if (loadBar) loadBar.innerHTML = `<div class="progress-track"><div class="progress-fill indeterminate"></div></div>`;
 
-    // Fetch count quickly to update message
+    const loadStart  = Date.now();
+    const lastLoadMs = +(localStorage.getItem("nova_last_load_ms") || 0);
+    let   totalCount = null;
+
+    const updateLoadingUI = () => {
+      const elapsed = (Date.now() - loadStart) / 1000;
+      const elapsedStr = elapsed.toFixed(1) + "s elapsed";
+      let msg = `<span class="spinner-inline"></span> `;
+      const pct = lastLoadMs > 0 ? Math.min(95, (elapsed / (lastLoadMs / 1000)) * 100) : null;
+      const barHtml = pct !== null
+        ? `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`
+        : `<div class="progress-track"><div class="progress-fill indeterminate"></div></div>`;
+
+      if (totalCount !== null) {
+        msg += `Loading ${totalCount.toLocaleString()} entries — ${elapsedStr}`;
+      } else {
+        msg += `Loading Nova results — ${elapsedStr}`;
+      }
+      if (lastLoadMs > 0) {
+        const remSec = Math.max(0, Math.round((lastLoadMs - (Date.now() - loadStart)) / 1000));
+        if (remSec > 1) msg += ` <span style="color:var(--accent)">~${remSec}s remaining</span>`;
+      }
+
+      if (rangeInfo) { rangeInfo.innerHTML = msg; rangeInfo.style.color = "var(--muted)"; }
+      if (loadBar)   loadBar.innerHTML = barHtml;
+    };
+
+    updateLoadingUI();
+    const ticker = setInterval(updateLoadingUI, 500);
+
     fetch(`/api/nova/count?${params}`)
       .then(r => r.ok ? r.json() : null)
-      .then(c => {
-        if (!c) return;
-        if (rangeInfo && rangeInfo.querySelector(".spinner-inline")) {
-          rangeInfo.innerHTML = `<span class="spinner-inline"></span> Loading ${(c.count || 0).toLocaleString()} entries…`;
-        }
-      })
+      .then(c => { if (c) totalCount = c.count || 0; })
       .catch(() => {});
 
     let latestRows = [], histData = [], samples = [];
@@ -1101,6 +1154,8 @@ Quick guide:
       if (sampRes.ok) samples    = (await sampRes.json()).data || [];
     } catch (_) {}
 
+    clearInterval(ticker);
+    localStorage.setItem("nova_last_load_ms", Date.now() - loadStart);
     if (loadBar) loadBar.innerHTML = "";
 
     _novaHistFull = histData;
@@ -1446,13 +1501,14 @@ Quick guide:
     const body = document.getElementById("mast-status-body");
     if (!body) return;
 
-    // ── Progress indicator (event-driven — no interval) ───────
+    // ── Progress indicator — live elapsed timers per step ─────
+    const pageStart = Date.now();
     const steps = {
-      mast:    { label: "MAST SQL Server",    state: "loading" },
-      alarms:  { label: "Alarm History",      state: "loading" },
-      pilots:  { label: "Sample Pilots",      state: "loading" },
-      gilson:  { label: "Gilson SQL",         state: "loading" },
-      run:     { label: "Gilson Run Status",  state: "loading" },
+      mast:    { label: "MAST SQL Server",    state: "loading", start: Date.now(), elapsed: 0 },
+      alarms:  { label: "Alarm History",      state: "loading", start: Date.now(), elapsed: 0 },
+      pilots:  { label: "Sample Pilots",      state: "loading", start: Date.now(), elapsed: 0 },
+      gilson:  { label: "Gilson SQL",         state: "loading", start: Date.now(), elapsed: 0 },
+      run:     { label: "Gilson Run Status",  state: "loading", start: Date.now(), elapsed: 0 },
     };
 
     const renderProgress = () => {
@@ -1462,24 +1518,31 @@ Quick guide:
       const total    = allSteps.length;
       const done     = allSteps.filter(s => s.state !== "loading").length;
       const pct      = Math.round((done / total) * 100);
-      const rows = allSteps.map(({ label, state }) => {
-        const icon = state === "loading" ? "⟳" : state === "ok" ? "✓" : "✗";
-        const cls  = state === "loading" ? "badge-pending" : state === "ok" ? "badge-good" : "badge-bad";
-        const note = state === "loading"
-          ? `<span style="color:var(--muted);font-size:12px">waiting…</span>`
-          : state === "ok" ? `<span style="color:var(--good);font-size:12px">connected</span>`
-          : `<span style="color:var(--bad);font-size:12px">${state}</span>`;
+      const now      = Date.now();
+      const rows = allSteps.map(s => {
+        const icon = s.state === "loading" ? "⟳" : s.state === "ok" ? "✓" : "✗";
+        const cls  = s.state === "loading" ? "badge-pending" : s.state === "ok" ? "badge-good" : "badge-bad";
+        let note;
+        if (s.state === "loading") {
+          const sec = ((now - s.start) / 1000).toFixed(1);
+          note = `<span style="color:var(--muted);font-size:12px">waiting… ${sec}s</span>`;
+        } else if (s.state === "ok") {
+          note = `<span style="color:var(--good);font-size:12px">connected in ${(s.elapsed / 1000).toFixed(1)}s</span>`;
+        } else {
+          note = `<span style="color:var(--bad);font-size:12px">${s.state} (after ${(s.elapsed / 1000).toFixed(1)}s)</span>`;
+        }
         return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">
           <span class="badge ${cls}" style="width:22px;text-align:center;flex-shrink:0">${icon}</span>
-          <span style="flex:1;color:var(--text);font-size:13px">${label}</span>
+          <span style="flex:1;color:var(--text);font-size:13px">${s.label}</span>
           ${note}
         </div>`;
       }).join("");
+      const overallSec = ((now - pageStart) / 1000).toFixed(1);
       b.innerHTML = `
         <div class="chart-card" style="max-width:440px">
           <div class="chart-card-header">
             <span class="chart-card-title">Connecting to databases</span>
-            <span style="color:var(--muted);font-size:12px">${done} / ${total}</span>
+            <span style="color:var(--muted);font-size:12px">${done} / ${total} &nbsp;·&nbsp; ${overallSec}s</span>
           </div>
           <div style="padding:0 16px 10px">
             <div style="background:var(--border);border-radius:99px;height:6px;overflow:hidden">
@@ -1488,58 +1551,69 @@ Quick guide:
           </div>
           <div style="padding:0 16px 8px">${rows}</div>
           <div style="padding:0 16px 12px;color:var(--muted);font-size:11px">
-            SQL Server connections take 3–10 s on first load. Subsequent refreshes are instant.
+            First connection to each SQL Server takes 3–15 s; subsequent refreshes are faster.
           </div>
         </div>`;
     };
 
     renderProgress();
+    // Live tick so elapsed times update every 500 ms while any step is still loading
+    const mastTicker = setInterval(() => {
+      if (Object.values(steps).every(s => s.state !== "loading")) { clearInterval(mastTicker); return; }
+      renderProgress();
+    }, 500);
 
-    // ── Fire all four in parallel; each updates progress on completion ──
+    // ── Fire all five in parallel; each records elapsed time on completion ──
     let status = null, pilots = [], gilson = null, gilsonRun = null, alarmHistory = null;
     let mastOnline = false, gilsonOnline = false;
 
     const mastFetch = fetch("/api/mast/status")
       .then(async r => {
+        steps.mast.elapsed = Date.now() - steps.mast.start;
         if (r.ok) { status = await r.json(); mastOnline = true; steps.mast.state = "ok"; }
         else { steps.mast.state = `HTTP ${r.status}`; }
       })
-      .catch(() => { steps.mast.state = "unreachable"; })
+      .catch(() => { steps.mast.elapsed = Date.now() - steps.mast.start; steps.mast.state = "unreachable"; })
       .finally(renderProgress);
 
     const alarmsFetch = fetch("/api/mast/alarms?days=7&limit=200")
       .then(async r => {
+        steps.alarms.elapsed = Date.now() - steps.alarms.start;
         if (r.ok) { alarmHistory = await r.json(); steps.alarms.state = "ok"; }
         else { steps.alarms.state = `HTTP ${r.status}`; }
       })
-      .catch(() => { steps.alarms.state = "unreachable"; })
+      .catch(() => { steps.alarms.elapsed = Date.now() - steps.alarms.start; steps.alarms.state = "unreachable"; })
       .finally(renderProgress);
 
     const pilotsFetch = fetch("/api/mast/sample-pilots")
       .then(async r => {
+        steps.pilots.elapsed = Date.now() - steps.pilots.start;
         if (r.ok) { pilots = (await r.json()).data || []; steps.pilots.state = "ok"; }
         else { steps.pilots.state = `HTTP ${r.status}`; }
       })
-      .catch(() => { steps.pilots.state = "unreachable"; })
+      .catch(() => { steps.pilots.elapsed = Date.now() - steps.pilots.start; steps.pilots.state = "unreachable"; })
       .finally(renderProgress);
 
     const gilsonFetch = fetch("/api/gilson/rs232")
       .then(async r => {
+        steps.gilson.elapsed = Date.now() - steps.gilson.start;
         if (r.ok) { gilson = await r.json(); gilsonOnline = gilson.db_reachable !== false; steps.gilson.state = "ok"; }
         else { steps.gilson.state = "offline"; }
       })
-      .catch(() => { steps.gilson.state = "offline"; })
+      .catch(() => { steps.gilson.elapsed = Date.now() - steps.gilson.start; steps.gilson.state = "offline"; })
       .finally(renderProgress);
 
     const runFetch = fetch("/api/gilson/run")
       .then(async r => {
+        steps.run.elapsed = Date.now() - steps.run.start;
         if (r.ok) { gilsonRun = await r.json(); steps.run.state = "ok"; }
         else { steps.run.state = "offline"; }
       })
-      .catch(() => { steps.run.state = "offline"; })
+      .catch(() => { steps.run.elapsed = Date.now() - steps.run.start; steps.run.state = "offline"; })
       .finally(renderProgress);
 
     await Promise.all([mastFetch, alarmsFetch, pilotsFetch, gilsonFetch, runFetch]);
+    clearInterval(mastTicker);
     if (!document.getElementById("mast-status-body")) return;
 
     if (!status) {
