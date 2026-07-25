@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 import database as db
 import bioht_importer
+import gilson_client
 import nova_client
 import nova_importer
 import opc_client
@@ -29,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent
-with open(BASE_DIR / "config.json") as f:
+with open(BASE_DIR / "config.json", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
 app = FastAPI(title="Bioreactor Dashboard", version="1.0.0")
@@ -93,6 +94,17 @@ def on_readings(readings: list[dict]):
 # App lifecycle
 # ---------------------------------------------------------------------------
 
+async def _prewarm_sql():
+    """Establish SQL connections at server startup so first browser request is fast."""
+    await asyncio.sleep(3)  # let uvicorn finish booting first
+    results = await asyncio.gather(sql_client.ping(), gilson_client.ping(), return_exceptions=True)
+    for name, r in zip(("MAST", "Gilson"), results):
+        if isinstance(r, Exception) or r is False:
+            logger.warning("SQL pre-warm failed for %s: %s", name, r)
+        else:
+            logger.info("SQL pre-warm OK: %s", name)
+
+
 @app.on_event("startup")
 async def startup():
     db.init_db()
@@ -101,6 +113,7 @@ async def startup():
     logger.info("OPC collection task started (protocol=%s)", opc_client.PROTOCOL)
     asyncio.create_task(nova_client.collect_forever())
     logger.info("Nova Flex2 collector started (url=%s)", nova_client.NOVA_URL)
+    asyncio.create_task(_prewarm_sql())
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +123,21 @@ async def startup():
 @app.get("/")
 async def root():
     return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+@app.get("/api/health")
+async def api_health():
+    """Quick connectivity check for all SQL backends. Also pre-warms connections."""
+    mast_ok, gilson_ok = await asyncio.gather(
+        sql_client.ping(),
+        gilson_client.ping(),
+        return_exceptions=True,
+    )
+    return {
+        "mast":   {"status": "ok" if mast_ok is True else "error"},
+        "gilson": {"status": "ok" if gilson_ok is True else "error"},
+        "overall": "ok" if mast_ok is True and gilson_ok is True else "degraded",
+    }
 
 
 @app.get("/api/config")
@@ -399,6 +427,145 @@ async def api_bioht_all_samples():
 
     result = sorted(merged.values(), key=lambda s: s.get("latest_time") or "", reverse=True)
     return {"count": len(result), "data": result}
+
+
+# ---------------------------------------------------------------------------
+# MAST sampling status, sample history, schema discovery
+# ---------------------------------------------------------------------------
+
+@app.get("/api/mast/status")
+async def api_mast_status():
+    """
+    Assembled MAST system status:
+      - instruments: rows from the Instruments registration table
+      - active_samples: open SampleData rows (no stop timestamp)
+      - alarms: rows from the first alarm table found (Alarms, AlarmHistory, …)
+      - schedule: rows from the first schedule table found (SamplingSchedule, SampleQueue, …)
+    Each section carries { found, data, table } so the UI can distinguish
+    "table doesn't exist" from "table exists but empty."
+    """
+    try:
+        status = await sql_client.get_mast_status()
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MAST SQL unavailable: {e}")
+
+
+@app.get("/api/mast/instruments")
+async def api_mast_instruments():
+    """Return all rows from the MAST Instruments registration table."""
+    try:
+        rows = await sql_client.get_instruments_registry()
+        return {"count": len(rows), "data": rows}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MAST SQL unavailable: {e}")
+
+
+@app.get("/api/mast/sample-history")
+async def api_mast_sample_history(days: int = 30):
+    """Return recent SampleData records from MAST_SP."""
+    if days > 365:
+        days = 365
+    try:
+        rows = await sql_client.get_sample_data_history(days_back=days)
+        return {"days": days, "count": len(rows), "data": rows}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MAST SQL unavailable: {e}")
+
+
+@app.get("/api/mast/sample-pilots")
+async def api_mast_sample_pilots():
+    """Return all sample pilots with live status, last sample, and next scheduled sample."""
+    try:
+        pilots = await sql_client.get_sample_pilots()
+        return {"count": len(pilots), "data": pilots}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MAST SQL unavailable: {e}")
+
+
+@app.get("/api/mast/alarms")
+async def api_mast_alarms(days: int = 7, limit: int = 200):
+    """
+    Return alarm history from the Ignition alarm journal stored in MAST_SP.
+
+    Query params:
+      days  — how many days back (default 7, max 90)
+      limit — max rows to return (default 200, max 1000)
+    """
+    if days > 90:
+        days = 90
+    if limit > 1000:
+        limit = 1000
+    try:
+        result = await sql_client.get_alarms(days_back=days, limit=limit)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MAST SQL unavailable: {e}")
+
+
+@app.get("/api/mast/tables")
+async def api_mast_tables():
+    """Return all user tables in MAST_SP with columns (schema discovery / debug)."""
+    try:
+        tables = await sql_client.discover_mast_tables()
+        return {"count": len(tables), "tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MAST SQL unavailable: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Gilson autosampler status (SQL64GILSON2012 on 192.168.137.10:55860)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/gilson/status")
+async def api_gilson_status():
+    """
+    Full Gilson status bundle:
+      rs232  — RS-232 link health (connected flag, last error, recent errors)
+      tables — one-row preview of every table in SQL64GILSON2012
+    Gracefully returns 503 if the Gilson SQL Server is unreachable.
+    """
+    try:
+        status = await gilson_client.get_gilson_status()
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Gilson SQL unavailable: {e}")
+
+
+@app.get("/api/gilson/rs232")
+async def api_gilson_rs232():
+    """
+    Focused RS-232 / serial communication health check for the Gilson 215.
+    Returns: connected (bool|null), last_ok_time, last_error, recent_errors (7 days).
+    """
+    try:
+        rs232 = await gilson_client.get_gilson_rs232()
+        return rs232
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Gilson SQL unavailable: {e}")
+
+
+@app.get("/api/gilson/run")
+async def api_gilson_run():
+    """
+    Current Gilson run status: busy flag, active method/program name, start time,
+    ETA, elapsed and remaining seconds, queue depth.
+    """
+    try:
+        run = await gilson_client.get_gilson_run_status()
+        return run
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Gilson SQL unavailable: {e}")
+
+
+@app.get("/api/gilson/tables")
+async def api_gilson_tables():
+    """Return all user tables in SQL64GILSON2012 with columns (schema discovery)."""
+    try:
+        tables = await gilson_client.discover_gilson_tables()
+        return {"count": len(tables), "tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Gilson SQL unavailable: {e}")
 
 
 @app.post("/api/bioht/import-txt")

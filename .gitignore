@@ -46,6 +46,18 @@ Scivario/Connect/*.config
 # Excel files
 *.xlsx
 
+# PowerPoint presentations (large binaries)
+*.pptx
+
+# Instrument export data and hardware-specific folders (runtime, not source)
+NOVAexport/
+BioHTExport/
+vicellexport/
+excelexport/
+Dasbox/
+Scivario/
+MAST/
+
 # DASware Connect full installation — ignore everything except logs
 Dasbox/Connect/*
 !Dasbox/Connect/logs/

@@ -32,7 +32,7 @@ import database as db
 
 logger = logging.getLogger(__name__)
 
-_CONFIG = json.loads((Path(__file__).parent.parent / "config.json").read_text())
+_CONFIG = json.loads((Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
 NOVA_URL      = _CONFIG["nova"]["url"]
 POLL_INTERVAL = _CONFIG["nova"]["poll_interval_seconds"]
 

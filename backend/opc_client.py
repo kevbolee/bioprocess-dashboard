@@ -21,7 +21,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent
-with open(BASE_DIR / "config.json") as f:
+with open(BASE_DIR / "config.json", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
 PROTOCOL = CONFIG["opc"]["protocol"]

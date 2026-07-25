@@ -1,0 +1,567 @@
+{
+  "title": "Claude Code Tutorial — Bioprocess SCADA Dashboard",
+  "org": "millipore_sigma",
+  "template_mode": "native",
+  "region": "usa_canada",
+  "color_scheme": 5,
+  "logo_color": "purple",
+  "slides": [
+
+    {
+      "type": "title",
+      "title": "One Day. One Developer. One AI.",
+      "subtitle": "Building a Bioprocess SCADA Dashboard with Claude Code"
+    },
+
+    {
+      "type": "table-of-content",
+      "title": "What We'll Cover",
+      "bullets": [
+        "What is Claude Code — and how it differs from Claude.ai",
+        "The challenge: a real laboratory software problem",
+        "Discovery: how Claude found the infrastructure with no documentation",
+        "What got built — in one day",
+        "The prompts that drove development",
+        "Key advantages for scientific software work",
+        "The closed loop: Plan → Build → Test → Fix",
+        "Future work: Opentrons robot",
+        "How to get started"
+      ]
+    },
+
+    {
+      "type": "section",
+      "number": "01",
+      "title": "What Is Claude Code?",
+      "subtitle": "Beyond the chat window",
+      "icon": "Brain"
+    },
+
+    {
+      "type": "columns",
+      "title": "Claude.ai Chat vs. Claude Code",
+      "columns": [
+        {
+          "icon": "Talk",
+          "heading": "Claude.ai Chat",
+          "body": "You paste code snippets and describe problems. Claude answers in text. You copy, paste, test, and come back. Context resets each session."
+        },
+        {
+          "icon": "CogsSettings",
+          "heading": "Claude Code",
+          "body": "Claude reads your actual files, edits them directly, runs commands, and fixes its own errors — all without leaving your terminal or IDE."
+        },
+        {
+          "icon": "LaunchRocket",
+          "heading": "The Difference",
+          "body": "Claude Code is an autonomous coding agent. It doesn't describe solutions — it implements them, verifies them, and iterates until they work."
+        }
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Claude Code Capabilities",
+      "title": "What Claude Code Can Do That Chat Cannot",
+      "icon": "Tech",
+      "bullets": [
+        "Read and edit any file in your project simultaneously",
+        "Run shell commands, install packages, start servers",
+        "Maintain full context across hundreds of files for an entire session",
+        "Catch its own errors and debug them without being asked",
+        "Work with git — stage, commit, and write meaningful messages",
+        "Call web searches and fetch documentation in real time"
+      ]
+    },
+
+    {
+      "type": "section",
+      "number": "02",
+      "title": "The Challenge",
+      "subtitle": "A real laboratory software problem",
+      "icon": "Strategy"
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "The Problem",
+      "title": "No Unified View of Bioprocess Data",
+      "icon": "Analytics",
+      "bullets": [
+        "DASware OPC UA servers: real-time bioreactor parameters (pH, DO, temp, agitation)",
+        "Nova BioProfile Flex2: cell density, viability, metabolites — OPC UA, no history",
+        "CEDEX BIO HT: LDH, additional analytes — MAST SQL Server + manual exports",
+        "Three disconnected systems, no single dashboard, no trend analysis",
+        "Historical data locked in CSV and TXT export files on instrument PCs"
+      ]
+    },
+
+    {
+      "type": "content-picture",
+      "eyebrow": "The Ask",
+      "title": "One Prompt to Start It All",
+      "image": "c:/USERDATA/kevbolee/Coding Projects/OPC data visualization/presentation/screenshots/01_overview.png",
+      "image_position": "right",
+      "bullets": [
+        "\"Build me a web-based SCADA dashboard for our bioreactors\"",
+        "No specification document. No architecture diagram.",
+        "Just a conversation — and Claude Code figured out the rest.",
+        "First working server: within the first hour"
+      ],
+      "caption": "The running application — built from a single sentence"
+    },
+
+    {
+      "type": "section",
+      "number": "03",
+      "title": "Discovery",
+      "subtitle": "Before a line of code was written",
+      "icon": "Search"
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Step 1: Reading the Software",
+      "title": "\"Here's the DASware Directory — Figure Out How It Works\"",
+      "icon": "CogsSettings",
+      "bullets": [
+        "User copied the entire DASware Connect installation directory to the project folder",
+        "Claude read DLL names, XML config files, and log files — no documentation provided",
+        "Identified OPC DA (classic COM/DCOM) and OPC UA endpoints from log patterns",
+        "Determined exact node-ID naming convention from connection logs: ns=2;s=Plant1/Unit1/...",
+        "Confirmed: DASware uses two separate OPC servers per system on port 51530"
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Step 2: Network Reconnaissance",
+      "title": "Connected to the LAN — Found Everything",
+      "icon": "Hub",
+      "bullets": [
+        "Claude scanned the lab LAN for OPC UA (port 4840) and SQL Server (port 1433)",
+        "Discovered all 8 bioreactor OPC servers: Scivario system at 192.168.137.8, DASbox at 192.168.137.7",
+        "Found the MAST SQL Server hosting the CEDEX BIO HT analytical database",
+        "Identified Nova BioProfile Flex2 OPC UA server on the instrument PC",
+        "No network map, no IT documentation — Claude built the infrastructure map from scratch"
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Step 3: Probing the Protocols Directly",
+      "title": "Claude Browsed the OPC Address Space Live",
+      "icon": "Tech",
+      "bullets": [
+        "Opened a live OPC UA connection to each DASware server",
+        "Walked the full node hierarchy — discovered every available tag and its data type",
+        "Found the Nova Flex2 node structure (SampleResults, CellDensity, Chem, Gas, Osmo groups)",
+        "Used the discovered node IDs to write the polling client — no guesswork, no typos",
+        "Built an OPC Tag Browser into the dashboard so operators can re-discover tags themselves"
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Step 4: The SQL Request",
+      "title": "\"I Don't Have SQL Access — Can You Create a Read-Only Login?\"",
+      "icon": "Server",
+      "bullets": [
+        "Claude identified it couldn't reach the MAST SQL Server without credentials",
+        "Rather than guessing or stopping, it asked: \"Please create a read-only SQL login for me\"",
+        "User created the login; Claude connected and explored the schema directly",
+        "Found the BioHT join chain: BioHT → SampleData → Vessel → Run → analyte tables",
+        "Mapped the VesselId field to bioreactor names and wrote the production SQL query"
+      ]
+    },
+
+    {
+      "type": "image",
+      "title": "OPC UA Tag Browser — Built Into the Dashboard",
+      "image": "c:/USERDATA/kevbolee/Coding Projects/OPC data visualization/presentation/screenshots/04_tag_browser.png",
+      "caption": "Live OPC node browser — discover tag IDs without any external tools"
+    },
+
+    {
+      "type": "section",
+      "number": "04",
+      "title": "What Got Built",
+      "subtitle": "A full-stack bioreactor monitoring system — in one day",
+      "icon": "LaunchRocket"
+    },
+
+    {
+      "type": "stats",
+      "title": "Built in One Day",
+      "eyebrow": "July 21–22, 2026",
+      "stats": [
+        {"value": "12", "label": "Python & JS source files"},
+        {"value": "3", "label": "Live data sources connected"},
+        {"value": "~3,000", "label": "Lines of code written"}
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Feature: Bioreactor Overview",
+      "title": "Live OPC UA Dashboard — 8 Bioreactors",
+      "icon": "ReportAnalytics",
+      "bullets": [
+        "Polls DASware OPC UA servers every 5 seconds (configurable)",
+        "KPI cards for pH, dissolved O₂, temperature, agitation, gas flow",
+        "Click any reactor to drill into a 24-hour trend chart",
+        "WebSocket push — browser updates in real time without refresh",
+        "OPC UA tag browser built in — discover node IDs without external tools"
+      ]
+    },
+
+    {
+      "type": "image",
+      "title": "Bioreactor Detail — Real-Time Trend Charts",
+      "image": "c:/USERDATA/kevbolee/Coding Projects/OPC data visualization/presentation/screenshots/02_reactor_detail_withplots.png",
+      "caption": "Scivario 1 (3L) — temperature, pH, DO, agitation with 24-hour trend plots"
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Feature: Nova BioProfile Flex2",
+      "title": "Analytical Data — Cell Culture Health",
+      "icon": "Analytics",
+      "bullets": [
+        "Live OPC UA polling: glucose, lactate, glutamine, NH₄, Na, K, osmolality, pCO₂",
+        "Date range selector with sample count estimate",
+        "Sample picker — select any historical measurement to inspect",
+        "Text filter narrows sample list and chart simultaneously",
+        "CSV import: 9 export files loaded, 1,585 historical rows, duplicates handled"
+      ]
+    },
+
+    {
+      "type": "image",
+      "title": "Nova Flex2 — Latest Measurement",
+      "image": "c:/USERDATA/kevbolee/Coding Projects/OPC data visualization/presentation/screenshots/10_nova_sample.png",
+      "caption": "Sample 22JULYMAN2HCCF — cell density, calculated results, chemistry, and gas analytes"
+    },
+
+    {
+      "type": "image",
+      "title": "Nova Flex2 — Glucose Trend Over Time",
+      "image": "c:/USERDATA/kevbolee/Coding Projects/OPC data visualization/presentation/screenshots/11_nova_tab_with_plot.png",
+      "caption": "Glucose concentration plotted across samples — interactive Chart.js with date range selector"
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Feature: CEDEX BIO HT",
+      "title": "Analytical Data — Dual Source Merge",
+      "icon": "Server",
+      "bullets": [
+        "Reads MAST SQL Server automatically (auto-collected samples)",
+        "Imports CEDEX archive TXT files (manual samples deleted from instrument)",
+        "Both sources merged — MAST wins on conflict, source badge shown per sample",
+        "Analyte consolidation: LDH2B + LDH2D plotted together as \"LDH2\"",
+        "MAST connectivity status shown live — graceful offline fallback"
+      ]
+    },
+
+    {
+      "type": "image",
+      "title": "CEDEX BIO HT — Dual Source Data",
+      "image": "c:/USERDATA/kevbolee/Coding Projects/OPC data visualization/presentation/screenshots/05_bioht_tab.png",
+      "caption": "10 samples from TXT archive — MAST offline fallback active, source badges visible"
+    },
+
+    {
+      "type": "section",
+      "number": "05",
+      "title": "The Prompts That Drove It",
+      "subtitle": "Real inputs — no prompt engineering required",
+      "icon": "CursorWriting"
+    },
+
+    {
+      "type": "speech-bubbles",
+      "eyebrow": "Actual User Prompts — Verbatim",
+      "title": "You Talk. Claude Code Builds.",
+      "bullets": [
+        "Build me a web-based SCADA dashboard for our bioreactors",
+        "Why does it say Invalid Date for the Nova latest measurement?",
+        "I copied all the Nova exports to novaexport/ — can you import it all?",
+        "Can you add a text filter so it only shows matching sample IDs?",
+        "I also have a BioHT txt export — implement the BioHT page just like Nova",
+        "The LDH values are not plotting — why?",
+        "The last letter of LDH2B/LDH2D is the dilution — can you consolidate like analytes?",
+        "The server crashed — here is the log",
+        "Can you move the Flex2 poll interval into config.json?"
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "What Claude Code Did With Each Prompt",
+      "title": "From Plain English to Working Code",
+      "icon": "TickingOff",
+      "bullets": [
+        "Read the existing codebase before touching anything",
+        "Traced the bug to a timezone offset format difference (+00:00 vs Z)",
+        "Discovered the BioHT timestamp used space not T — Chart.js dropped all points silently",
+        "Found the concurrent pyodbc connection race condition from a log paste",
+        "Fixed the server crash, added a debounce, and retested — without being asked"
+      ]
+    },
+
+    {
+      "type": "section",
+      "number": "06",
+      "title": "Key Advantages",
+      "subtitle": "Why Claude Code changes what's possible",
+      "icon": "TargetGoal"
+    },
+
+    {
+      "type": "columns",
+      "title": "Three Things Claude Code Does Differently",
+      "columns": [
+        {
+          "icon": "Brain",
+          "heading": "Persistent Context",
+          "body": "Holds your entire codebase in mind for a full session. No re-explaining. No copy-pasting. It knows where everything lives."
+        },
+        {
+          "icon": "CogsSettings",
+          "heading": "Self-Correcting",
+          "body": "When a bug appears, Claude Code reads the error, finds the root cause, and fixes it — often before you ask. It ran syntax checks after every edit."
+        },
+        {
+          "icon": "Clock",
+          "heading": "Respects Your Constraints",
+          "body": "\"Passwords are never typed in chat\" — it remembered this the entire session and never asked. Credentials stayed in .env throughout."
+        }
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Compared to Chat Mode",
+      "title": "What Would Have Taken Weeks Took One Day",
+      "icon": "Strategy",
+      "bullets": [
+        "Chat: paste file, get suggestion, paste back, re-run, explain error, repeat",
+        "Claude Code: describe the goal once — it reads, edits, verifies, moves on",
+        "Cross-file changes (e.g., add a feature to backend + frontend + config) in one step",
+        "Git history created automatically with meaningful commit messages",
+        "No context lost when switching between database, API, and UI work"
+      ]
+    },
+
+    {
+      "type": "timetable-6",
+      "title": "One Day of Development",
+      "eyebrow": "July 21–22, 2026",
+      "phases": [
+        {
+          "label": "8 AM",
+          "title": "Project Start",
+          "icon": "CogsSettings",
+          "milestones": ["FastAPI scaffold", "SQLite schema", "OPC UA client"]
+        },
+        {
+          "label": "12 PM",
+          "title": "Frontend Live",
+          "icon": "Analytics",
+          "milestones": ["Dashboard UI", "WebSocket updates", "Live charts"]
+        },
+        {
+          "label": "3 PM",
+          "title": "Nova Integration",
+          "icon": "ReportAnalytics",
+          "milestones": ["Flex2 OPC UA client", "CSV importer", "Sample picker"]
+        },
+        {
+          "label": "6 PM",
+          "title": "BioHT Integration",
+          "icon": "Server",
+          "milestones": ["MAST SQL client", "TXT importer", "Dual-source merge"]
+        },
+        {
+          "label": "Next Day",
+          "title": "Polish & Deploy",
+          "icon": "LaunchRocket",
+          "milestones": ["Bug fixes", "Config cleanup", "Git history"]
+        }
+      ]
+    },
+
+    {
+      "type": "section",
+      "number": "07",
+      "title": "The Closed Loop",
+      "subtitle": "Plan → Build → Test → Fix — and why the tools matter",
+      "icon": "ReportAnalytics"
+    },
+
+    {
+      "type": "process-ring",
+      "eyebrow": "The Autonomous Improvement Cycle",
+      "title": "Claude Iterates Until It Works",
+      "subtitle": "The same loop applies to any domain where automated feedback is available",
+      "steps": [
+        {"label": "Plan",    "description": "Map the system, outline the spec", "icon": "Strategy"},
+        {"label": "Build",   "description": "Write code, implement features",   "icon": "CogsSettings"},
+        {"label": "Test",    "description": "Run automated tests, observe output", "icon": "TickingOff"},
+        {"label": "Iterate", "description": "Read results, fix issues, refine", "icon": "Brain"},
+        {"label": "Deploy",  "description": "Ship the verified working solution", "icon": "LaunchRocket"}
+      ]
+    },
+
+    {
+      "type": "two-contents",
+      "title": "The Same Pattern in Two Different Domains",
+      "eyebrow": "Plan → Build → Test → Fix",
+      "columns": [
+        {
+          "heading": "SCADA Dashboard",
+          "bullets": [
+            "Plan: Analyze OPC logs, map network topology, design DB schema",
+            "Build: FastAPI backend, OPC UA client, Chart.js frontend",
+            "Test: Playwright automates browser, takes screenshots",
+            "Read: Claude sees exactly what the user sees — every bug visible",
+            "Fix: Edit code, restart server, re-run Playwright automatically",
+            "Key tool: Playwright + asyncua + network access"
+          ]
+        },
+        {
+          "heading": "This Presentation",
+          "bullets": [
+            "Plan: Outline content, pick slide types, choose icons",
+            "Build: Write deck.json spec, run build_pptx.py",
+            "Test: pptx_verify.py renders every slide to PNG via LibreOffice",
+            "Read: Claude reads each PNG — sees layout, overflow, spacing",
+            "Fix: Edit deck.json, rebuild PPTX, re-run verify automatically",
+            "Key tool: merck-ppt-v2 skill + LibreOffice headless"
+          ]
+        }
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "The Key Insight",
+      "title": "Automated Testing Is What Closes the Loop",
+      "icon": "TickingOff",
+      "bullets": [
+        "Without Playwright: Claude describes solutions — but cannot see whether the UI actually works",
+        "Without pptx_verify: Claude writes a spec — but cannot see whether the slide renders correctly",
+        "With these tools: Claude finds the issue, locates the cause, fixes it, and verifies the fix — without stopping",
+        "This is the difference between an AI that helps and an AI that delivers",
+        "The more tools Claude can run and read, the more autonomously it can iterate"
+      ]
+    },
+
+    {
+      "type": "content-picture",
+      "eyebrow": "Automated Testing in Practice",
+      "title": "Every Fix Was Verified Before Reporting Done",
+      "image": "c:/USERDATA/kevbolee/Coding Projects/OPC data visualization/presentation/screenshots/03_connection_log.png",
+      "image_position": "right",
+      "bullets": [
+        "Server crash → paste log → Claude reads trace → fix thread safety → restart → re-test",
+        "LDH chart empty → Claude traces to Chart.js timestamp format → fix in one line → verify in browser",
+        "°C displayed as Â°C → Claude checks raw bytes → finds encoding mismatch → fixes all four files",
+        "Slide overflow → Claude reads rendered PNG → adjusts font size → rebuilds → re-reads"
+      ],
+      "caption": "Connection log showing Nova Flex2 polling — verified via automated screenshot"
+    },
+
+    {
+      "type": "section",
+      "number": "08",
+      "title": "Future Work",
+      "subtitle": "Closing the loop on physical instruments",
+      "icon": "LaunchRocket"
+    },
+
+    {
+      "type": "content-picture",
+      "eyebrow": "Next Frontier",
+      "title": "Opentrons Liquid Handling Robot",
+      "image": "Technology/robot",
+      "image_position": "right",
+      "bullets": [
+        "Opentrons OT-2/Flex: open-source programmable liquid handler with Python API",
+        "Goal: connect Claude Code to the Opentrons via USB",
+        "Claude writes pipetting protocols, executes them, reads plate reader output",
+        "Iterates: adjust volumes, aspiration rates, tip types based on measured transfer accuracy",
+        "End goal: autonomous protocol optimization — no manual iteration between runs"
+      ],
+      "caption": "The same Plan → Build → Test → Fix loop, applied to physical science"
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Why This Is the Same Pattern",
+      "title": "The Test Loop Extends to Physical Systems",
+      "icon": "Strategy",
+      "bullets": [
+        "The Opentrons Python API is Claude Code's actuator — it can run any protocol",
+        "The plate reader is Claude Code's test harness — measurable, repeatable output",
+        "Plate reader result → Claude reads data → identifies deviation → updates protocol → re-run",
+        "What took a scientist a day of manual iteration could complete overnight autonomously",
+        "This is not hypothetical — the SCADA dashboard was built by the same closed loop today"
+      ]
+    },
+
+    {
+      "type": "section",
+      "number": "09",
+      "title": "Getting Started",
+      "subtitle": "Claude Code is available today",
+      "icon": "Idea"
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "How to Access Claude Code",
+      "title": "Getting Started at Merck",
+      "icon": "Idea",
+      "bullets": [
+        "AI Installation Assistant — guided setup configured for the Merck IT environment",
+        "  mygpt-suite.uptimize.merckgroup.com/chat?a=f0e5ddf7-3747-417d-a974-ba22fb842d85",
+        "CLI install: step-by-step walkthrough is built into the installation assistant",
+        "VS Code / JetBrains extension: included in the CLI installation walkthrough",
+        "Works on any codebase — Python, JavaScript, R, SQL, or mixed"
+      ]
+    },
+
+    {
+      "type": "content",
+      "eyebrow": "Good Starting Points at Merck",
+      "title": "Where Claude Code Adds the Most Value",
+      "layout": "2-col",
+      "bullets": [
+        "Instrument data pipelines and parsers",
+        "Lab automation scripts and schedulers",
+        "LIMS integrations and data exports",
+        "Internal dashboards and visualization tools",
+        "One-off data analysis scripts",
+        "Documenting and explaining legacy code",
+        "Connecting disparate data systems",
+        "Rapid prototyping for process development"
+      ]
+    },
+
+    {
+      "type": "contact",
+      "title": "Questions?",
+      "name": "Kevin Lee",
+      "role": "Focused Modalities Applications",
+      "email": "kevin.lee@milliporesigma.com"
+    },
+
+    {
+      "type": "closing",
+      "title": "Thank You",
+      "subtitle": "Curious minds dedicated to human progress"
+    }
+  ]
+}

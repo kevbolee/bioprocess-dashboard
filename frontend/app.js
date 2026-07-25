@@ -8,7 +8,7 @@ const App = (() => {
   let CONFIG = null;          // from /api/config
   let latestData = {};        // bioreactor_id -> {param -> {value,quality,timestamp}}
   let activeBR = null;        // currently selected bioreactor id (null = overview)
-  let activeView = "bioreactor"; // 'bioreactor' | 'analytical'
+  let activeView = "bioreactor"; // 'bioreactor' | 'analytical' | 'mast-status' | 'sample-history'
   let timeRangeHours = 24;
   let ws = null;
   let wsRetryDelay = 2000;
@@ -41,6 +41,7 @@ const App = (() => {
     latestData = await fetch("/api/latest").then(r => r.json());
     renderView();
     connectWS();
+    fetch("/api/health").catch(() => {}); // pre-warm SQL connections silently
     trSelect.addEventListener("change", () => {
       timeRangeHours = +trSelect.value;
       historyCache = {};
@@ -169,7 +170,11 @@ const App = (() => {
   function renderView() {
     destroyCharts();
     document.getElementById("nav-analytical").classList.toggle("active", activeView === "analytical");
-    if (activeView === "analytical") { renderAnalytical(); return; }
+    document.getElementById("nav-mast-status").classList.toggle("active", activeView === "mast-status");
+    document.getElementById("nav-sample-history").classList.toggle("active", activeView === "sample-history");
+    if (activeView === "analytical")    { renderAnalytical();   return; }
+    if (activeView === "mast-status")   { renderMastStatus();   return; }
+    if (activeView === "sample-history"){ renderSampleHistory(); return; }
     if (activeBR === null) renderOverview();
     else renderDetail(activeBR);
     updateNavDots();
@@ -1373,6 +1378,670 @@ Quick guide:
     wrap.innerHTML = html;
   }
 
+  // ── MAST Sampling Status ───────────────────────────────────
+
+  async function showMastStatus() {
+    activeView = "mast-status";
+    activeBR = null;
+    buildNav();
+    renderView();
+  }
+
+  async function renderMastStatus() {
+    content.innerHTML = `
+      <div class="detail-header">
+        <button class="back-btn" onclick="App._backToOverview()">← Back</button>
+        <h2 class="section-title" style="margin:0">MAST Sampling Status</h2>
+        <button class="btn btn-sm" onclick="App._mastStatusRefresh()">Refresh</button>
+      </div>
+      <div id="mast-status-body"><div style="color:var(--muted);padding:40px;text-align:center">Loading…</div></div>`;
+    await _mastStatusRefresh();
+  }
+
+  async function _mastStatusRefresh() {
+    const body = document.getElementById("mast-status-body");
+    if (!body) return;
+
+    // ── Progress indicator (event-driven — no interval) ───────
+    const steps = {
+      mast:    { label: "MAST SQL Server",    state: "loading" },
+      alarms:  { label: "Alarm History",      state: "loading" },
+      pilots:  { label: "Sample Pilots",      state: "loading" },
+      gilson:  { label: "Gilson SQL",         state: "loading" },
+      run:     { label: "Gilson Run Status",  state: "loading" },
+    };
+
+    const renderProgress = () => {
+      const b = document.getElementById("mast-status-body");
+      if (!b) return;
+      const allSteps = Object.values(steps);
+      const total    = allSteps.length;
+      const done     = allSteps.filter(s => s.state !== "loading").length;
+      const pct      = Math.round((done / total) * 100);
+      const rows = allSteps.map(({ label, state }) => {
+        const icon = state === "loading" ? "⟳" : state === "ok" ? "✓" : "✗";
+        const cls  = state === "loading" ? "badge-pending" : state === "ok" ? "badge-good" : "badge-bad";
+        const note = state === "loading"
+          ? `<span style="color:var(--muted);font-size:12px">waiting…</span>`
+          : state === "ok" ? `<span style="color:var(--good);font-size:12px">connected</span>`
+          : `<span style="color:var(--bad);font-size:12px">${state}</span>`;
+        return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)">
+          <span class="badge ${cls}" style="width:22px;text-align:center;flex-shrink:0">${icon}</span>
+          <span style="flex:1;color:var(--text);font-size:13px">${label}</span>
+          ${note}
+        </div>`;
+      }).join("");
+      b.innerHTML = `
+        <div class="chart-card" style="max-width:440px">
+          <div class="chart-card-header">
+            <span class="chart-card-title">Connecting to databases</span>
+            <span style="color:var(--muted);font-size:12px">${done} / ${total}</span>
+          </div>
+          <div style="padding:0 16px 10px">
+            <div style="background:var(--border);border-radius:99px;height:6px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:99px;transition:width 0.4s ease"></div>
+            </div>
+          </div>
+          <div style="padding:0 16px 8px">${rows}</div>
+          <div style="padding:0 16px 12px;color:var(--muted);font-size:11px">
+            SQL Server connections take 3–10 s on first load. Subsequent refreshes are instant.
+          </div>
+        </div>`;
+    };
+
+    renderProgress();
+
+    // ── Fire all four in parallel; each updates progress on completion ──
+    let status = null, pilots = [], gilson = null, gilsonRun = null, alarmHistory = null;
+    let mastOnline = false, gilsonOnline = false;
+
+    const mastFetch = fetch("/api/mast/status")
+      .then(async r => {
+        if (r.ok) { status = await r.json(); mastOnline = true; steps.mast.state = "ok"; }
+        else { steps.mast.state = `HTTP ${r.status}`; }
+      })
+      .catch(() => { steps.mast.state = "unreachable"; })
+      .finally(renderProgress);
+
+    const alarmsFetch = fetch("/api/mast/alarms?days=7&limit=200")
+      .then(async r => {
+        if (r.ok) { alarmHistory = await r.json(); steps.alarms.state = "ok"; }
+        else { steps.alarms.state = `HTTP ${r.status}`; }
+      })
+      .catch(() => { steps.alarms.state = "unreachable"; })
+      .finally(renderProgress);
+
+    const pilotsFetch = fetch("/api/mast/sample-pilots")
+      .then(async r => {
+        if (r.ok) { pilots = (await r.json()).data || []; steps.pilots.state = "ok"; }
+        else { steps.pilots.state = `HTTP ${r.status}`; }
+      })
+      .catch(() => { steps.pilots.state = "unreachable"; })
+      .finally(renderProgress);
+
+    const gilsonFetch = fetch("/api/gilson/rs232")
+      .then(async r => {
+        if (r.ok) { gilson = await r.json(); gilsonOnline = gilson.db_reachable !== false; steps.gilson.state = "ok"; }
+        else { steps.gilson.state = "offline"; }
+      })
+      .catch(() => { steps.gilson.state = "offline"; })
+      .finally(renderProgress);
+
+    const runFetch = fetch("/api/gilson/run")
+      .then(async r => {
+        if (r.ok) { gilsonRun = await r.json(); steps.run.state = "ok"; }
+        else { steps.run.state = "offline"; }
+      })
+      .catch(() => { steps.run.state = "offline"; })
+      .finally(renderProgress);
+
+    await Promise.all([mastFetch, alarmsFetch, pilotsFetch, gilsonFetch, runFetch]);
+    if (!document.getElementById("mast-status-body")) return;
+
+    if (!status) {
+      body.innerHTML = `<div style="color:var(--bad);padding:40px;text-align:center">MAST SQL offline or unreachable.</div>`;
+      return;
+    }
+
+    // ── Gilson status badges ──────────────────────────────────
+    const rs232 = gilson;
+    const rs232BadgeClass = !gilsonOnline ? "badge-bad" : "badge-good";
+    const rs232BadgeText  = !gilsonOnline ? "Gilson SQL: Offline" : "Gilson SQL: Connected";
+
+    const runBusy = gilsonRun?.busy;
+    const runBadgeClass = !gilsonOnline  ? "badge-pending"
+                        : runBusy === true  ? "badge-sim"
+                        : runBusy === false ? "badge-good"
+                        :                    "badge-pending";
+    const runBadgeText = !gilsonOnline  ? "Gilson: –"
+                       : runBusy === true  ? "Gilson: Running"
+                       : runBusy === false ? "Gilson: Idle"
+                       :                    "Gilson: –";
+
+    let html = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+      <span class="badge ${mastOnline ? "badge-good" : "badge-bad"}">${mastOnline ? "MAST: Online" : "MAST: Offline"}</span>
+      <span class="badge ${rs232BadgeClass}">${rs232BadgeText}</span>
+      <span class="badge ${runBadgeClass}">${runBadgeText}</span>
+    </div>`;
+
+    // ── Gilson run status card ────────────────────────────────
+    html += `<div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Gilson 215 — Current Run</span>
+        ${gilsonRun?.run_table ? `<span style="color:var(--muted);font-size:11px">Source: ${gilsonRun.run_table}</span>` : ""}
+      </div>`;
+
+    if (!gilsonOnline) {
+      html += `<div style="color:var(--muted);padding:12px;font-size:13px">Gilson SQL offline.</div>`;
+    } else if (!gilsonRun?.run_table) {
+      html += `<div style="color:var(--muted);padding:12px;font-size:13px">${gilsonRun?.note || "No run/queue table found."}</div>`;
+    } else {
+      // Helper: format duration seconds as "Xh Ym Zs" or "Ym Zs"
+      const fmtDur = sec => {
+        if (sec == null || isNaN(sec)) return "–";
+        const abs = Math.abs(sec);
+        const h = Math.floor(abs / 3600);
+        const m = Math.floor((abs % 3600) / 60);
+        const s = Math.floor(abs % 60);
+        const sign = sec < 0 ? "-" : "";
+        return h > 0 ? `${sign}${h}h ${m}m` : `${sign}${m}m ${s}s`;
+      };
+
+      const methodName    = gilsonRun.method_name || null;
+      const startedAt     = gilsonRun.started_at  || null;
+      const eta           = gilsonRun.eta          || null;
+      const elapsedSec    = gilsonRun.elapsed_sec;
+      const remainingSec  = gilsonRun.remaining_sec;
+      const queueDepth    = gilsonRun.queue_depth;
+
+      const stateColor = runBusy === true  ? "var(--accent)"
+                       : runBusy === false ? "var(--good)"
+                       :                    "var(--muted)";
+      const stateText  = runBusy === true  ? "Running"
+                       : runBusy === false ? "Idle"
+                       :                    "Unknown";
+
+      html += `<div class="kpi-row" style="margin:0 0 10px">
+        <div class="kpi-card" style="cursor:default">
+          <div class="kpi-label">Status</div>
+          <div class="kpi-value" style="color:${stateColor};font-size:20px">${stateText}</div>
+          <div class="kpi-quality" style="color:var(--muted)">${gilsonRun.note || ""}</div>
+        </div>`;
+
+      if (methodName) {
+        html += `<div class="kpi-card" style="cursor:default;min-width:160px">
+          <div class="kpi-label">Method / Program</div>
+          <div class="kpi-value" style="font-size:14px;color:var(--text);word-break:break-word">${methodName}</div>
+          <div class="kpi-quality" style="color:var(--muted)">active method</div>
+        </div>`;
+      }
+
+      if (startedAt) {
+        html += `<div class="kpi-card" style="cursor:default">
+          <div class="kpi-label">Started</div>
+          <div class="kpi-value" style="font-size:14px;color:var(--text)">${fmtTime(startedAt)}</div>
+          <div class="kpi-quality" style="color:var(--muted)">Elapsed: ${fmtDur(elapsedSec)}</div>
+        </div>`;
+      }
+
+      if (remainingSec != null) {
+        const overdue = remainingSec < 0;
+        html += `<div class="kpi-card" style="cursor:default">
+          <div class="kpi-label">${overdue ? "Overdue by" : "Time Remaining"}</div>
+          <div class="kpi-value" style="font-size:18px;color:${overdue ? "var(--warn)" : "var(--accent)"}">
+            ${fmtDur(remainingSec)}
+          </div>
+          <div class="kpi-quality" style="color:var(--muted)">${eta ? "ETA: " + fmtTime(eta) : ""}</div>
+        </div>`;
+      } else if (eta) {
+        html += `<div class="kpi-card" style="cursor:default">
+          <div class="kpi-label">ETA</div>
+          <div class="kpi-value" style="font-size:14px;color:var(--accent)">${fmtTime(eta)}</div>
+          <div class="kpi-quality" style="color:var(--muted)">estimated finish</div>
+        </div>`;
+      }
+
+      if (queueDepth != null && queueDepth > 0) {
+        html += `<div class="kpi-card" style="cursor:default">
+          <div class="kpi-label">Queue</div>
+          <div class="kpi-value" style="font-size:20px;color:var(--muted)">${queueDepth}</div>
+          <div class="kpi-quality" style="color:var(--muted)">samples waiting</div>
+        </div>`;
+      }
+
+      html += `</div>`;
+
+      // Raw active row (collapsed) for debugging until schema is confirmed
+      if (gilsonRun.run_row) {
+        const rawCols = Object.keys(gilsonRun.run_row);
+        html += `<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--muted);font-size:11px;user-select:none">Raw row from ${gilsonRun.run_table}</summary>
+          <table class="log-table" style="margin-top:6px"><thead><tr>${rawCols.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody><tr>
+          ${rawCols.map(c => {
+            const v = gilsonRun.run_row[c] ?? "–";
+            const isTs = /time|date|stamp/i.test(c) && String(v).length > 10;
+            return `<td style="font-size:11px">${isTs ? fmtTime(String(v)) : v}</td>`;
+          }).join("")}
+          </tr></tbody></table></details>`;
+      }
+    }
+    html += `</div>`;
+
+    // ── Sample Pilots card ────────────────────────────────────
+    html += `<div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Sample Pilots</span>
+        <span style="color:var(--muted);font-size:11px">${pilots.filter(p => p.isOnline).length} online · ${pilots.filter(p => p.ExperimentRunning).length} running</span>
+      </div>`;
+
+    if (!mastOnline || !pilots.length) {
+      html += `<div style="color:var(--muted);padding:16px;font-size:13px">
+        ${mastOnline ? "No sample pilot data returned." : "MAST SQL offline."}</div>`;
+    } else {
+      const onlinePilots  = pilots.filter(p => p.isOnline);
+      const offlinePilots = pilots.filter(p => !p.isOnline);
+
+      const renderPilotCard = (p) => {
+        const running  = p.ExperimentRunning;
+        const lastSamp = p.last_sample_time ? fmtTime(p.last_sample_time) : "never";
+        const seq      = p.sequence_name || "–";
+        const interval = p.sampling_interval_min;
+
+        let nextLabel = "none scheduled";
+        let nextColor = "var(--muted)";
+        if (p.next_sample_time) {
+          const msUntil = new Date(p.next_sample_time) - Date.now();
+          if (msUntil < 0) {
+            nextLabel = "overdue";
+            nextColor = "var(--warn)";
+          } else {
+            const minUntil = Math.round(msUntil / 60000);
+            nextLabel = minUntil < 60
+              ? `in ${minUntil} min`
+              : `in ${Math.round(minUntil / 60)}h ${minUntil % 60}m`;
+            nextColor = minUntil <= 5 ? "var(--accent)" : "var(--good)";
+          }
+        }
+
+        const stateColor = running   ? "var(--accent)"
+                         : p.isOnline ? "var(--good)"
+                         : "var(--muted)";
+        const stateText  = running   ? "Running"
+                         : p.isOnline ? "Online"
+                         : "Offline";
+
+        return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:4px;min-width:150px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:2px">
+            <span style="font-weight:700;font-size:13px;color:var(--text)">${p.name}</span>
+            <span style="font-size:11px;font-weight:600;color:${stateColor}">${stateText}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted)">Seq: ${seq}</div>
+          <div style="font-size:11px;color:var(--muted)">Last: ${lastSamp}</div>
+          <div style="font-size:11px;color:${nextColor};font-weight:${p.next_sample_time ? "600" : "400"}">
+            Next: ${p.next_sample_time
+              ? `${nextLabel} <span style="color:var(--muted);font-weight:400">(${fmtTime(p.next_sample_time)})</span>`
+              : nextLabel}
+          </div>
+          ${interval ? `<div style="font-size:10px;color:var(--muted)">Every ${interval} min</div>` : ""}
+        </div>`;
+      };
+
+      if (onlinePilots.length) {
+        html += `<div style="padding:10px 16px 4px">
+          <p style="font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Online (${onlinePilots.length})</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">${onlinePilots.map(renderPilotCard).join("")}</div>
+        </div>`;
+      }
+
+      if (offlinePilots.length) {
+        html += `<details style="padding:4px 16px 8px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:12px;user-select:none;padding:6px 0">Offline pilots (${offlinePilots.length})</summary>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">${offlinePilots.map(renderPilotCard).join("")}</div>
+        </details>`;
+      }
+    }
+    html += `</div>`;
+
+    // Gilson SQL connection card
+    html += `<div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Gilson 215 — SQL Connection</span>
+      </div>
+      <div style="padding:12px 16px;display:flex;align-items:center;gap:12px">
+        <span class="badge ${gilsonOnline ? "badge-good" : "badge-bad"}" style="font-size:12px;padding:4px 10px">
+          ${gilsonOnline ? "Connected" : "Offline"}
+        </span>
+        <span style="color:var(--muted);font-size:13px">${rs232?.note || (gilsonOnline ? "Gilson SQL reachable." : "Gilson SQL unreachable — check GILSON_SQL_* in .env.")}</span>
+      </div>
+    </div>`;
+
+    // ── Alarm History card ────────────────────────────────────
+    {
+      const alarmData  = alarmHistory?.data  || [];
+      const alarmTable = alarmHistory?.table || null;
+      const alarmCols  = alarmHistory?.columns || (alarmData.length ? Object.keys(alarmData[0]) : []);
+
+      // Detect column names by heuristic (Ignition journal or similar)
+      const col = (patterns) => alarmCols.find(c => patterns.some(p => p.test(c))) || null;
+      const timeCol     = col([/^eventtime$/i, /^event_time$/i, /^alarmtime$/i, /^timestamp$/i, /^time$/i, /date/i]);
+      const pathCol     = col([/displaypath/i, /alarmpath/i, /display_path/i, /^path$/i, /^source$/i, /^name$/i, /description/i]);
+      const stateCol    = col([/eventstate/i, /event_state/i, /eventtype/i, /event_type/i, /^state$/i, /^type$/i]);
+      const ackByCol    = col([/ackby/i, /ack_by/i, /acknowledgedby/i, /acknowledged_by/i, /^user$/i, /operator/i]);
+      const curStateCol = col([/currentstate/i, /current_state/i]);
+      const priorityCol = col([/^priority$/i]);
+      const labelCol    = col([/^label$/i]);
+
+      // State → badge color
+      const stateClass = (val) => {
+        const s = String(val || "").toLowerCase();
+        if (s.includes("active") && !s.includes("ack") && !s.includes("clear")) return "badge-bad";
+        if (s.includes("ack"))    return "badge-pending";
+        if (s.includes("clear"))  return "badge-good";
+        if (s === "0" || s === "clear") return "badge-good";
+        if (s === "1" || s === "active") return "badge-bad";
+        if (s === "2" || s === "ack")   return "badge-pending";
+        return "badge-pending";
+      };
+      const stateLabel = (val) => {
+        const s = String(val || "").toLowerCase();
+        if (/^0$/.test(s)) return "Clear";
+        if (/^1$/.test(s)) return "Active";
+        if (/^2$/.test(s)) return "Ack";
+        return val ?? "–";
+      };
+
+      // Summary counts
+      let nActive = 0, nUnack = 0;
+      alarmData.forEach(row => {
+        const sv = String(row[stateCol] || row[curStateCol] || "").toLowerCase();
+        if (sv.includes("active") && !sv.includes("ack") && !sv.includes("clear")) nActive++;
+        if (sv.includes("unack")) nUnack++;
+      });
+
+      html += `<div class="chart-card" style="margin-bottom:16px">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Alarm History</span>
+          <span style="display:flex;gap:6px;align-items:center">
+            ${nActive > 0 ? `<span class="badge badge-bad" style="font-size:10px">${nActive} Active</span>` : ""}
+            ${nUnack  > 0 ? `<span class="badge badge-pending" style="font-size:10px">${nUnack} Unacknowledged</span>` : ""}
+            ${alarmTable ? `<span style="color:var(--muted);font-size:11px">Table: ${alarmTable}</span>` : ""}
+          </span>
+        </div>`;
+
+      if (!alarmHistory?.found) {
+        html += `<div style="color:var(--muted);padding:16px;font-size:13px">
+          No alarm journal table found in MAST_SP.<br>
+          <span style="font-size:11px">Checked: ALARM_EVENTS, AlarmEvents, Alarms, AlarmHistory, SystemAlarms, AlarmLog, EventLog + GUID-column schema scan.</span>
+        </div>`;
+      } else if (!alarmData.length) {
+        html += `<div style="color:var(--muted);padding:16px;font-size:13px">No alarms in the last 7 days (table: ${alarmTable}).</div>`;
+      } else {
+        html += `<div style="overflow-x:auto">
+          <table class="log-table">
+            <thead><tr>
+              ${timeCol     ? "<th>Event Time</th>" : ""}
+              ${pathCol     ? "<th>Display Path</th>" : ""}
+              ${stateCol    ? "<th>Event State</th>" : ""}
+              ${curStateCol ? "<th>Current State</th>" : ""}
+              ${priorityCol ? "<th>Priority</th>" : ""}
+              ${ackByCol    ? "<th>Ack'd By</th>" : ""}
+              ${labelCol    ? "<th>Label</th>" : ""}
+              ${!pathCol && !stateCol ? alarmCols.map(c => `<th>${c}</th>`).join("") : ""}
+            </tr></thead>
+            <tbody>`;
+        alarmData.slice(0, 100).forEach(row => {
+          const sv = row[stateCol] ?? null;
+          const cls = stateClass(sv);
+          const rowStyle = cls === "badge-bad" ? "background:rgba(239,68,68,0.07)" :
+                           cls === "badge-pending" ? "background:rgba(251,191,36,0.07)" : "";
+          html += `<tr style="${rowStyle}">
+            ${timeCol     ? `<td style="font-size:11px;color:var(--muted);white-space:nowrap">${row[timeCol] ? fmtTime(String(row[timeCol])) : "–"}</td>` : ""}
+            ${pathCol     ? `<td style="font-size:12px;max-width:320px;word-break:break-word">${row[pathCol] ?? "–"}</td>` : ""}
+            ${stateCol    ? `<td><span class="badge ${cls}" style="font-size:10px">${stateLabel(sv)}</span></td>` : ""}
+            ${curStateCol ? `<td style="font-size:11px;color:var(--muted)">${row[curStateCol] ?? "–"}</td>` : ""}
+            ${priorityCol ? `<td style="font-size:11px;color:var(--muted)">${row[priorityCol] ?? "–"}</td>` : ""}
+            ${ackByCol    ? `<td style="font-size:11px;color:var(--muted)">${row[ackByCol] ?? "–"}</td>` : ""}
+            ${labelCol    ? `<td style="font-size:11px;color:var(--muted)">${row[labelCol] ?? "–"}</td>` : ""}
+            ${!pathCol && !stateCol ? alarmCols.map(c => {
+              const v = row[c] ?? "–";
+              const isTs = /time|date|stamp/i.test(c) && String(v).length > 10;
+              return `<td style="font-size:11px">${isTs ? fmtTime(String(v)) : v}</td>`;
+            }).join("") : ""}
+          </tr>`;
+        });
+        html += `</tbody></table></div>`;
+        if (alarmData.length > 100) {
+          html += `<div style="padding:8px 16px;color:var(--muted);font-size:11px">Showing 100 of ${alarmData.length} events. Use /api/mast/alarms to query more.</div>`;
+        }
+      }
+      html += `</div>`;
+    }
+
+    // ── Instruments card ──────────────────────────────────────
+    html += `<div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-card-header"><span class="chart-card-title">Installed Instruments</span></div>`;
+
+    const instr = status.instruments || {};
+    if (!instr.found || !instr.data?.length) {
+      html += `<div style="color:var(--muted);padding:16px;font-size:13px">No instrument records found in MAST_SP.</div>`;
+    } else {
+      const cols = Object.keys(instr.data[0]);
+      const nameCol  = cols.find(c => /name/i.test(c))       || cols[0];
+      const typeCol  = cols.find(c => /type/i.test(c));
+      const activeCol= cols.find(c => /active|enabled|status/i.test(c));
+
+      html += `<table class="log-table"><thead><tr>
+        <th>Name</th>${typeCol ? "<th>Type</th>" : ""}
+        <th>Status</th>
+        ${cols.filter(c => c !== nameCol && c !== typeCol && c !== activeCol && !/^id$/i.test(c)).map(c => `<th>${c}</th>`).join("")}
+      </tr></thead><tbody>`;
+
+      instr.data.forEach(row => {
+        const name   = row[nameCol] ?? "–";
+        const type   = typeCol   ? (row[typeCol]   ?? "–") : null;
+        const active = activeCol ? row[activeCol]           : null;
+        const isGilson = /gilson/i.test(String(name));
+        const isActive = active === true || active === 1 || String(active).toLowerCase() === "true";
+        const badge = active === null || active === undefined
+          ? ""
+          : `<span class="badge ${isActive ? "badge-good" : "badge-bad"}" style="font-size:10px">${isActive ? "Active" : "Inactive"}</span>`;
+        const extra = cols.filter(c => c !== nameCol && c !== typeCol && c !== activeCol && !/^id$/i.test(c))
+          .map(c => `<td style="color:var(--muted);font-size:12px">${row[c] ?? "–"}</td>`).join("");
+        html += `<tr${isGilson ? ' style="background:rgba(79,142,247,0.08)"' : ""}>
+          <td><b>${name}</b>${isGilson ? ' <span style="color:#4f8ef7;font-size:10px;font-weight:600">GILSON</span>' : ""}</td>
+          ${typeCol ? `<td style="color:var(--muted)">${type}</td>` : ""}
+          <td>${badge || "–"}</td>
+          ${extra}
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    html += `</div>`;
+
+    // ── Active Samples card ───────────────────────────────────
+    html += `<div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Active / Recent Samples</span>
+        ${status.active_samples?.end_col === null ? '<span style="color:var(--muted);font-size:11px">End column unknown — showing most recent</span>' : ""}
+      </div>`;
+
+    const as = status.active_samples || {};
+    if (!as.found || !as.data?.length) {
+      html += `<div style="color:var(--muted);padding:16px;font-size:13px">${as.found ? "No active samples running." : "Could not query SampleData."}</div>`;
+    } else {
+      const scols = Object.keys(as.data[0]);
+      html += `<table class="log-table"><thead><tr>${scols.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>`;
+      as.data.forEach(row => {
+        html += `<tr>${scols.map(c => {
+          const v = row[c] ?? "–";
+          const isTs = /time|start|stop|date/i.test(c) && String(v).length > 10;
+          return `<td style="font-size:12px">${isTs ? fmtTime(String(v)) : v}</td>`;
+        }).join("")}</tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    html += `</div>`;
+
+    // ── Schedule card ─────────────────────────────────────────
+    html += `<div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Upcoming Schedule</span>
+        ${status.schedule?.table ? `<span style="color:var(--muted);font-size:11px">Table: ${status.schedule.table}</span>` : ""}
+      </div>`;
+
+    const sched = status.schedule || {};
+    if (!sched.found) {
+      html += `<div style="color:var(--muted);padding:16px;font-size:13px">No scheduling table found in MAST_SP
+        <br><span style="font-size:11px">Checked: SamplingSchedule, SampleQueue, ScheduledTasks, SamplingOrder, SampleRequests, TaskQueue</span></div>`;
+    } else if (!sched.data?.length) {
+      html += `<div style="color:var(--muted);padding:16px;font-size:13px">Schedule table found (${sched.table}) but no upcoming entries.</div>`;
+    } else {
+      const cols2 = Object.keys(sched.data[0]);
+      html += `<table class="log-table"><thead><tr>${cols2.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>`;
+      sched.data.forEach(row => {
+        html += `<tr>${cols2.map(c => {
+          const v = row[c] ?? "–";
+          const isTs = /time|date|start|scheduled/i.test(c) && String(v).length > 10;
+          return `<td style="font-size:12px">${isTs ? fmtTime(String(v)) : v}</td>`;
+        }).join("")}</tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    html += `</div>`;
+
+    body.innerHTML = html;
+  }
+
+  // ── Sample History ─────────────────────────────────────────
+
+  async function showSampleHistory() {
+    activeView = "sample-history";
+    activeBR = null;
+    buildNav();
+    renderView();
+  }
+
+  async function renderSampleHistory() {
+    const today    = new Date();
+    const thirtyAgo= new Date(today - 30 * 24 * 3600 * 1000);
+    const todayStr = today.toISOString().slice(0, 10);
+    const thirtyStr= thirtyAgo.toISOString().slice(0, 10);
+
+    content.innerHTML = `
+      <div class="detail-header">
+        <button class="back-btn" onclick="App._backToOverview()">← Back</button>
+        <h2 class="section-title" style="margin:0">Sample History</h2>
+      </div>
+      <div class="analytical-controls" style="flex-wrap:wrap;gap:8px;margin-bottom:12px">
+        <span style="color:var(--muted);font-size:12px;align-self:center">Days back:</span>
+        <select id="sh-days" class="select" style="width:140px" onchange="App._shRefresh()">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365">Last 365 days</option>
+        </select>
+        <input type="text" id="sh-filter" class="select" placeholder="Filter by Vessel / Sample ID…" style="width:220px" oninput="App._shFilter()">
+        <button class="btn btn-sm" onclick="App._shRefresh()">Refresh</button>
+      </div>
+      <div id="sh-info" style="color:var(--muted);font-size:12px;margin-bottom:12px"></div>
+      <div id="sh-body"></div>`;
+    await _shRefresh();
+  }
+
+  let _shRowsCache = [];
+
+  async function _shRefresh() {
+    const days = +( document.getElementById("sh-days")?.value || 30 );
+    const info = document.getElementById("sh-info");
+    if (info) { info.textContent = "Loading…"; info.style.color = "var(--muted)"; }
+
+    let rows = [];
+    let mastOnline = false;
+    try {
+      const r = await fetch(`/api/mast/sample-history?days=${days}`);
+      if (r.ok) { const d = await r.json(); rows = d.data || []; mastOnline = true; }
+    } catch (_) {}
+
+    _shRowsCache = rows;
+    const statusEl = document.getElementById("sh-info");
+    if (statusEl) {
+      statusEl.textContent = mastOnline
+        ? `${rows.length} samples in the last ${days} days`
+        : "MAST SQL offline — no data";
+      statusEl.style.color = mastOnline ? "var(--muted)" : "var(--warn)";
+    }
+    _shRender(_shRowsCache);
+  }
+
+  function _shFilter() {
+    const raw = (document.getElementById("sh-filter")?.value || "").trim().toLowerCase();
+    const filtered = raw
+      ? _shRowsCache.filter(r => Object.values(r).some(v => String(v ?? "").toLowerCase().includes(raw)))
+      : _shRowsCache;
+    _shRender(filtered);
+  }
+
+  function _shRender(rows) {
+    const wrap = document.getElementById("sh-body");
+    if (!wrap) return;
+
+    if (!rows.length) {
+      wrap.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center;background:var(--surface);border-radius:var(--radius)">No samples in this range.</div>`;
+      return;
+    }
+
+    const allCols = Object.keys(rows[0]);
+    const sampleIdCol = allCols.find(c => /sampleid|sample_id|samplename/i.test(c)) || allCols[0];
+    const vesselCol   = allCols.find(c => /vessel/i.test(c));
+    const expCol      = allCols.find(c => /experiment/i.test(c));
+    const startCol    = allCols.find(c => /^start$/i.test(c)) || allCols.find(c => /start|begin/i.test(c));
+    const stopCol     = allCols.find(c => /^stop$|^end$/i.test(c)) || allCols.find(c => /stop|end|finish/i.test(c));
+    const statusCol   = allCols.find(c => /status|state/i.test(c));
+
+    // Priority columns shown prominently, rest as extra
+    const primaryCols = [sampleIdCol, vesselCol, expCol, startCol, stopCol, statusCol].filter(Boolean);
+    const extraCols   = allCols.filter(c => !primaryCols.includes(c) && !/^id$/i.test(c));
+
+    let html = `<div class="chart-card">
+      <div class="chart-card-header"><span class="chart-card-title">${rows.length} Sample${rows.length !== 1 ? "s" : ""}</span>
+        <span style="color:var(--muted);font-size:11px">from MAST SampleData</span>
+      </div>
+      <table class="log-table"><thead><tr>
+        ${primaryCols.map(c => `<th>${c}</th>`).join("")}
+        ${extraCols.map(c => `<th style="color:var(--muted)">${c}</th>`).join("")}
+      </tr></thead><tbody>`;
+
+    rows.forEach(row => {
+      const sid    = row[sampleIdCol] ?? "–";
+      const vessel = vesselCol  ? (row[vesselCol]  ?? "–") : null;
+      const exp    = expCol     ? (row[expCol]     ?? "–") : null;
+      const start  = startCol   ? fmtTime(String(row[startCol]  ?? "")) : null;
+      const stop   = stopCol    ? (row[stopCol]  ? fmtTime(String(row[stopCol])) : '<span style="color:var(--accent)">Running</span>') : null;
+      const stat   = statusCol  ? (row[statusCol] ?? "–") : null;
+
+      const isRunning = stopCol && !row[stopCol];
+
+      html += `<tr${isRunning ? ' style="background:rgba(79,142,247,0.06)"' : ""}>`;
+      html += `<td><b>${sid}</b></td>`;
+      if (vessel !== null) html += `<td>${vessel}</td>`;
+      if (exp    !== null) html += `<td style="color:var(--muted)">${exp}</td>`;
+      if (start  !== null) html += `<td style="font-size:12px">${start}</td>`;
+      if (stop   !== null) html += `<td style="font-size:12px">${stop}</td>`;
+      if (stat   !== null) {
+        const okColor = /complet|done|ok|finish/i.test(String(stat)) ? "var(--good)" : /run|activ/i.test(String(stat)) ? "var(--accent)" : "var(--muted)";
+        html += `<td><span style="color:${okColor}">${stat}</span></td>`;
+      }
+      extraCols.forEach(c => {
+        const v = row[c] ?? "–";
+        const isTs = /time|date/i.test(c) && String(v).length > 10;
+        html += `<td style="color:var(--muted);font-size:12px">${isTs ? fmtTime(String(v)) : v}</td>`;
+      });
+      html += `</tr>`;
+    });
+
+    html += `</tbody></table></div>`;
+    wrap.innerHTML = html;
+  }
+
   function _backToOverview() { activeView = "bioreactor"; activeBR = null; buildNav(); renderView(); }
 
   return { init, openParamModal, closeModal, showConnectionLog, showTagBrowser,
@@ -1381,7 +2050,9 @@ Quick guide:
            _novaRefresh, _novaRefreshDebounced, _novaFilter, _novaDrawChart,
            _novaSelectSample, _novaImportCSV, _novaHandleFileImport,
            _biohtRefresh, _biohtRefreshDebounced, _biohtFilter, _biohtDrawChart, _biohtConsolidateToggle,
-           _biohtSelectSample, _biohtImportTxt, _biohtHandleFileImport };
+           _biohtSelectSample, _biohtImportTxt, _biohtHandleFileImport,
+           showMastStatus, _mastStatusRefresh,
+           showSampleHistory, _shRefresh, _shFilter };
 })();
 
 document.addEventListener("DOMContentLoaded", App.init);
