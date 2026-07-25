@@ -37,10 +37,10 @@
       {
         "name": "DASware-DASbox",
         "type": "OPC_UA",
-        "url": "opc.tcp://CTPCMO508723:51530/UA/connectServer",
+        "url": "opc.tcp://CTPCMO508723:51510/UA/DasgipCoreServer",
         "plant_alias": "Plant1",
         "enabled": true,
-        "note": "Hostname CTPCMO508723, IP 192.168.137.7. DASware v6.5.0.6. Confirmed from Dasbox/Connect/logs/debug.txt."
+        "note": "Hostname CTPCMO508723, IP 192.168.137.7. DASware v6.5.0.6. URL confirmed from dasboxOPC.xml (DASware Connect config). Domain names from XML: pH (lowercase h), DO, Temperature/Sensor, Agitation/Actuator, PumpA-K/Actuator, Pressure/Sensor, Gassing, Offgas, Reactor. Node ID paths TBC — run probe_opc_paths.py with an active batch to confirm exact format including subdomain level."
       }
     ]
   },
