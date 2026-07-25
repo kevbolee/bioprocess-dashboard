@@ -134,6 +134,34 @@ def _query_bioht_sync(
     return results
 
 
+def _count_bioht_sync(
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> int:
+    """Return COUNT(*) from the same MAST BioHT join used by _query_bioht_sync."""
+    conn = _get_conn()
+    sql = """
+        SELECT COUNT(*)
+        FROM BioHtTestHeaders th
+        JOIN BioHtSampleResultWithLotInformations sr ON sr.TestHeaderId = th.Id
+        JOIN BioHtTestResultData trd ON trd.Id = sr.ResultPacketId
+        LEFT JOIN SampleData sd ON sd.SampleID = th.SampleId
+    """
+    if since and until:
+        sql += " WHERE COALESCE(sd.Start, th.CreateDateTime) >= ? AND COALESCE(sd.Start, th.CreateDateTime) <= ?"
+        params: list = [since, until]
+    else:
+        sql += " WHERE COALESCE(sd.Start, th.CreateDateTime) >= DATEADD(day, -90, GETDATE())"
+        params = []
+    try:
+        cur = conn.execute(sql, params)
+        row = cur.fetchone()
+        return row[0] if row else 0
+    except Exception as e:
+        logger.warning("MAST BioHT count query failed: %s", e)
+        return 0
+
+
 def _query_vessels_sync() -> list[str]:
     conn = _get_conn()
     sql = """
@@ -228,6 +256,15 @@ def _query_instruments_sync() -> list[str]:
 # ---------------------------------------------------------------------------
 # Public async API
 # ---------------------------------------------------------------------------
+
+async def count_bioht_results(
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> int:
+    """Return the MAST BioHT row count quickly without fetching all data."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, partial(_count_bioht_sync, since, until))
+
 
 async def get_bioht_results(
     vessel_id: Optional[str] = None,

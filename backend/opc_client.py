@@ -12,11 +12,15 @@ import asyncio
 import json
 import logging
 import math
+import os
 import random
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
+
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +101,12 @@ async def _read_opc_ua(server_cfg: dict, br_cfg: dict) -> dict[str, Optional[flo
 
     values: dict[str, Optional[float]] = {}
     try:
-        async with Client(url=server_cfg["url"]) as client:
+        client = Client(url=server_cfg["url"])
+        opc_user = os.environ.get("OPC_UA_USERNAME", "")
+        if opc_user:
+            client.set_user(opc_user)
+            client.set_password(os.environ.get("OPC_UA_PASSWORD", ""))
+        async with client:
             for param, node_id in br_cfg["tags"].items():
                 try:
                     val = await client.get_node(node_id).read_value()

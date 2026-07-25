@@ -8,14 +8,13 @@ const App = (() => {
   let CONFIG = null;          // from /api/config
   let latestData = {};        // bioreactor_id -> {param -> {value,quality,timestamp}}
   let activeBR = null;        // currently selected bioreactor id (null = overview)
-  let activeView = "bioreactor"; // 'bioreactor' | 'analytical' | 'vicell' | 'mast-status' | 'sample-history'
+  let activeView = "bioreactor"; // 'bioreactor' | 'analytical' | 'nova' | 'vicell' | 'mast-status' | 'sample-history'
   let timeRangeHours = 24;
   let ws = null;
   let wsRetryDelay = 2000;
   let charts = {};            // chart instances keyed by canvas id
   let historyCache = {};      // key: `${br}/${param}/${hours}` -> [{timestamp,value}]
   let selectedParam = null;   // for detail view KPI highlight
-  let activeAnalTab = "bioht"; // 'bioht' | 'nova'
   let _novaRowsCache = [];     // text+date filtered rows (used by chart)
   let _novaHistFull  = [];     // full date-range rows before text filter
   let _novaSampFull  = [];     // full sample list before text filter
@@ -170,10 +169,12 @@ const App = (() => {
   function renderView() {
     destroyCharts();
     document.getElementById("nav-analytical").classList.toggle("active", activeView === "analytical");
+    document.getElementById("nav-nova").classList.toggle("active", activeView === "nova");
     document.getElementById("nav-vicell").classList.toggle("active", activeView === "vicell");
     document.getElementById("nav-mast-status").classList.toggle("active", activeView === "mast-status");
     document.getElementById("nav-sample-history").classList.toggle("active", activeView === "sample-history");
     if (activeView === "analytical")    { renderAnalytical();   return; }
+    if (activeView === "nova")          { renderNova();          return; }
     if (activeView === "vicell")        { renderVicell();        return; }
     if (activeView === "mast-status")   { renderMastStatus();   return; }
     if (activeView === "sample-history"){ renderSampleHistory(); return; }
@@ -184,6 +185,7 @@ const App = (() => {
 
   function updateView() {
     if (activeView === "analytical") return;
+    if (activeView === "nova") return;
     if (activeView === "vicell") return;
     if (activeBR === null) updateOverviewValues();
     else updateDetailKPIs(activeBR);
@@ -446,6 +448,8 @@ const App = (() => {
       <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
         <input id="tb-url"  class="select" value="opc.tcp://CTPCOG910098:51530/UA/connectServer" style="padding:7px">
         <input id="tb-root" class="select" placeholder="Root NodeId (optional, e.g. ns=2;s=Plant1/Unit1)" style="padding:7px;grid-column:1/3">
+        <input id="tb-user" class="select" placeholder="Username (if required)" style="padding:7px">
+        <input id="tb-pass" class="select" type="password" placeholder="Password (if required)" style="padding:7px">
       </div>
       <div style="display:flex;gap:8px;margin-bottom:10px">
         <button class="btn btn-sm" onclick="App._tbBrowse()">Browse Nodes</button>
@@ -464,10 +468,13 @@ Quick guide:
   async function _tbBrowse() {
     const url  = document.getElementById("tb-url").value.trim();
     const root = document.getElementById("tb-root").value.trim();
+    const user = document.getElementById("tb-user").value.trim();
+    const pass = document.getElementById("tb-pass").value;
     if (!url) { document.getElementById("tb-result").textContent = "Enter the OPC UA endpoint URL."; return; }
     document.getElementById("tb-result").textContent = "Connecting to OPC UA server… (may take 5-10 seconds)";
     try {
-      const apiUrl = `/api/opc/browse-ua?url=${encodeURIComponent(url)}&root_node=${encodeURIComponent(root)}`;
+      let apiUrl = `/api/opc/browse-ua?url=${encodeURIComponent(url)}&root_node=${encodeURIComponent(root)}`;
+      if (user) apiUrl += `&username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
       const resp = await fetch(apiUrl);
       const data = await resp.json();
       if (!resp.ok) { document.getElementById("tb-result").textContent = "Error: " + (data.detail || resp.statusText); return; }
@@ -488,13 +495,17 @@ Quick guide:
   async function _tbRead() {
     const url    = document.getElementById("tb-url").value.trim();
     const nodeId = document.getElementById("tb-root").value.trim();
+    const user   = document.getElementById("tb-user").value.trim();
+    const pass   = document.getElementById("tb-pass").value;
     if (!url || !nodeId) {
       document.getElementById("tb-result").textContent = "Enter the OPC UA URL and a NodeId to read.";
       return;
     }
     document.getElementById("tb-result").textContent = "Reading node…";
     try {
-      const resp = await fetch(`/api/opc/read-ua?url=${encodeURIComponent(url)}&node_id=${encodeURIComponent(nodeId)}`);
+      let readUrl = `/api/opc/read-ua?url=${encodeURIComponent(url)}&node_id=${encodeURIComponent(nodeId)}`;
+      if (user) readUrl += `&username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
+      const resp = await fetch(readUrl);
       const data = await resp.json();
       if (!resp.ok) { document.getElementById("tb-result").textContent = "Error: " + (data.detail || resp.statusText); return; }
       document.getElementById("tb-result").textContent =
@@ -549,41 +560,20 @@ Quick guide:
   }
 
   async function renderAnalytical() {
-    const biohtActive = activeAnalTab === "bioht";
-    content.innerHTML = `
-      <div class="detail-header">
-        <button class="back-btn" onclick="App._backToOverview()">← Back</button>
-        <h2 class="section-title" style="margin:0">Analytical Results</h2>
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:12px">
-        <button class="btn${biohtActive ? '' : ' btn-secondary'}" id="tab-btn-bioht" onclick="App._switchAnalTab('bioht')">BioHT / MAST Data</button>
-        <button class="btn${!biohtActive ? '' : ' btn-secondary'}" id="tab-btn-nova" onclick="App._switchAnalTab('nova')">Nova Flex2 (OPC)</button>
-      </div>
-      <div id="anal-content"></div>`;
-
-    if (activeAnalTab === "bioht") {
-      await _renderBiohtContent();
-    } else {
-      await _renderNovaContent();
-    }
+    content.innerHTML = `<div id="anal-content"></div>`;
+    await _renderBiohtContent();
   }
 
-  async function _switchAnalTab(tab) {
-    activeAnalTab = tab;
-    // Update tab button styles
-    const bBioht = document.getElementById("tab-btn-bioht");
-    const bNova  = document.getElementById("tab-btn-nova");
-    if (bBioht) { bBioht.className = "btn" + (tab === "bioht" ? "" : " btn-secondary"); }
-    if (bNova)  { bNova.className  = "btn" + (tab === "nova"  ? "" : " btn-secondary"); }
-    // Destroy charts owned by the previous tab
-    ["anal-chart", "nova-chart"].forEach(id => {
-      if (charts[id]) { charts[id].destroy(); delete charts[id]; }
-    });
-    const analContent = document.getElementById("anal-content");
-    if (!analContent) return;
-    analContent.innerHTML = "";
-    if (tab === "bioht") { await _renderBiohtContent(); }
-    else { await _renderNovaContent(); }
+  async function showNova() {
+    activeView = "nova";
+    activeBR = null;
+    buildNav();
+    renderView();
+  }
+
+  async function renderNova() {
+    content.innerHTML = `<div id="anal-content"></div>`;
+    await _renderNovaContent();
   }
 
   // ── BioHT tab ─────────────────────────────────────────────
@@ -630,7 +620,7 @@ Quick guide:
         <div id="bioht-range-info" style="color:var(--muted);font-size:12px"></div>
         <div id="bioht-mast-status" style="font-size:11px;margin-left:auto"></div>
       </div>
-      <div style="height:10px"></div>
+      <div id="bioht-load-bar"></div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
         <span style="color:var(--muted);font-size:12px;white-space:nowrap">View sample:</span>
         <select id="bioht-sample-sel" class="select" style="flex:1;max-width:480px" onchange="App._biohtSelectSample()">
@@ -654,11 +644,33 @@ Quick guide:
     const since  = fromEl?.value ? fromEl.value + "T00:00:00" : null;
     const until  = toEl?.value   ? toEl.value   + "T23:59:59" : null;
 
+    const params = new URLSearchParams();
+    if (since) params.set("since", since);
+    if (until) params.set("until", until);
+
+    // Show loading state
+    const rangeInfo = document.getElementById("bioht-range-info");
+    const loadBar   = document.getElementById("bioht-load-bar");
+    if (rangeInfo) {
+      rangeInfo.innerHTML = `<span class="spinner-inline"></span> Querying MAST SQL Server…`;
+      rangeInfo.style.color = "var(--muted)";
+    }
+    if (loadBar) loadBar.innerHTML = `<div class="progress-track"><div class="progress-fill indeterminate"></div></div>`;
+
+    // Fetch row count (fast) and data (slow) simultaneously; update message when count arrives
+    fetch(`/api/bioht/count?${params}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(c => {
+        if (!c) return;
+        const total = c.total || 0;
+        if (rangeInfo && rangeInfo.querySelector(".spinner-inline")) {
+          rangeInfo.innerHTML = `<span class="spinner-inline"></span> Loading ${total.toLocaleString()} entries (${c.local.toLocaleString()} local + ${c.mast.toLocaleString()} MAST)…`;
+        }
+      })
+      .catch(() => {});
+
     let latestRows = [], histData = [], samples = [], mastOnline = false;
     try {
-      const params = new URLSearchParams();
-      if (since) params.set("since", since);
-      if (until) params.set("until", until);
       const [histRes, sampRes] = await Promise.all([
         fetch(`/api/bioht/all?${params}`),
         fetch("/api/bioht/all-samples"),
@@ -670,6 +682,9 @@ Quick guide:
       }
       if (sampRes.ok) samples = (await sampRes.json()).data || [];
     } catch (_) {}
+
+    // Clear loading bar
+    if (loadBar) loadBar.innerHTML = "";
 
     // Derive latest from merged data
     if (histData.length > 0) {
@@ -1023,7 +1038,8 @@ Quick guide:
         <button class="btn btn-sm btn-secondary" onclick="App._novaExportXlsx()" title="Download an xlsx file matching the Flex_2_Data template">Export xlsx</button>
         <input type="file" id="nova-file-input" accept=".csv" multiple style="display:none" onchange="App._novaHandleFileImport(event)">
       </div>
-      <div id="nova-range-info" style="color:var(--muted);font-size:12px;margin:6px 0 14px"></div>
+      <div id="nova-range-info" style="color:var(--muted);font-size:12px;margin:6px 0 4px"></div>
+      <div id="nova-load-bar"></div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
         <span style="color:var(--muted);font-size:12px;white-space:nowrap">View sample:</span>
         <select id="nova-sample-sel" class="select" style="flex:1;max-width:480px" onchange="App._novaSelectSample()">
@@ -1049,11 +1065,32 @@ Quick guide:
     const since  = fromEl?.value ? fromEl.value + "T00:00:00" : null;
     const until  = toEl?.value   ? toEl.value   + "T23:59:59" : null;
 
+    const params = new URLSearchParams();
+    if (since) params.set("since", since);
+    if (until) params.set("until", until);
+
+    // Show loading state
+    const rangeInfo = document.getElementById("nova-range-info");
+    const loadBar   = document.getElementById("nova-load-bar");
+    if (rangeInfo) {
+      rangeInfo.innerHTML = `<span class="spinner-inline"></span> Loading Nova results…`;
+      rangeInfo.style.color = "var(--muted)";
+    }
+    if (loadBar) loadBar.innerHTML = `<div class="progress-track"><div class="progress-fill indeterminate"></div></div>`;
+
+    // Fetch count quickly to update message
+    fetch(`/api/nova/count?${params}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(c => {
+        if (!c) return;
+        if (rangeInfo && rangeInfo.querySelector(".spinner-inline")) {
+          rangeInfo.innerHTML = `<span class="spinner-inline"></span> Loading ${(c.count || 0).toLocaleString()} entries…`;
+        }
+      })
+      .catch(() => {});
+
     let latestRows = [], histData = [], samples = [];
     try {
-      const params = new URLSearchParams();
-      if (since) params.set("since", since);
-      if (until) params.set("until", until);
       const [latRes, histRes, sampRes] = await Promise.all([
         fetch("/api/nova/latest"),
         fetch(`/api/nova/results?${params}`),
@@ -1063,6 +1100,8 @@ Quick guide:
       if (histRes.ok) histData   = (await histRes.json()).data || [];
       if (sampRes.ok) samples    = (await sampRes.json()).data || [];
     } catch (_) {}
+
+    if (loadBar) loadBar.innerHTML = "";
 
     _novaHistFull = histData;
     _novaSampFull = samples;
@@ -2460,8 +2499,7 @@ Quick guide:
   }
 
   return { init, openParamModal, closeModal, showConnectionLog, showTagBrowser,
-           _tbBrowse, _tbRead, _backToOverview, showAnalytical,
-           _switchAnalTab,
+           _tbBrowse, _tbRead, _backToOverview, showAnalytical, showNova,
            _novaRefresh, _novaRefreshDebounced, _novaFilter, _novaDrawChart,
            _novaSelectSample, _novaImportCSV, _novaHandleFileImport,
            _novaExportXlsx,

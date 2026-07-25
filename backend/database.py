@@ -205,10 +205,8 @@ def get_connection_log(limit: int = 50) -> list[dict]:
 
 
 def purge_old_data():
-    days = CONFIG["database"]["retention_days"]
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    with get_conn() as conn:
-        conn.execute("DELETE FROM bioreactor_data WHERE timestamp < ?", (cutoff,))
+    # Data retention is disabled — all historical data is kept indefinitely.
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +416,32 @@ def get_bioht_latest() -> list[dict]:
             (row["sample_id"],),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_bioht_results(since: str = None, until: str = None) -> int:
+    """Return total number of local BioHT rows within the given date range."""
+    with get_conn() as conn:
+        if since and until:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM bioht_results WHERE sample_time >= ? AND sample_time <= ?",
+                (since, until),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM bioht_results").fetchone()
+    return row[0] if row else 0
+
+
+def count_nova_results(since: str = None, until: str = None) -> int:
+    """Return total number of Nova result rows within the given date range."""
+    with get_conn() as conn:
+        if since and until:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM nova_results WHERE sample_time >= ? AND sample_time <= ?",
+                (since, until),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM nova_results").fetchone()
+    return row[0] if row else 0
 
 
 # ---------------------------------------------------------------------------

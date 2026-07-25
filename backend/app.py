@@ -324,6 +324,24 @@ async def api_nova_sample(sample_time: str):
     return {"count": len(rows), "data": rows}
 
 
+@app.get("/api/bioht/count")
+async def api_bioht_count(since: Optional[str] = None, until: Optional[str] = None):
+    """Fast row count from local SQLite + MAST SQL Server — used to show progress before the full load."""
+    local = db.count_bioht_results(since=since, until=until)
+    mast = 0
+    try:
+        mast = await sql_client.count_bioht_results(since=since, until=until)
+    except Exception:
+        pass
+    return {"local": local, "mast": mast, "total": local + mast}
+
+
+@app.get("/api/nova/count")
+async def api_nova_count(since: Optional[str] = None, until: Optional[str] = None):
+    """Fast row count for Nova results from local SQLite."""
+    return {"count": db.count_nova_results(since=since, until=until)}
+
+
 @app.get("/api/bioht/results")
 async def api_bioht_results(days: int = 30, since: Optional[str] = None, until: Optional[str] = None):
     if days > 365:
@@ -674,7 +692,7 @@ async def api_vicell_samples(since: Optional[str] = None, until: Optional[str] =
 
 
 @app.get("/api/opc/browse-ua")
-async def api_opc_browse_ua(url: str, root_node: str = ""):
+async def api_opc_browse_ua(url: str, root_node: str = "", username: str = "", password: str = ""):
     """
     Browse an OPC UA server's address space.
     Use this to discover exact node IDs on a DASware 6 machine.
@@ -694,7 +712,11 @@ async def api_opc_browse_ua(url: str, root_node: str = ""):
 
     results = []
     try:
-        async with Client(url=url, timeout=10) as client:
+        client = Client(url=url, timeout=10)
+        if username:
+            client.set_user(username)
+            client.set_password(password)
+        async with client:
             if root_node:
                 start = client.get_node(root_node)
             else:
@@ -712,7 +734,7 @@ async def api_opc_browse_ua(url: str, root_node: str = ""):
 
 
 @app.get("/api/opc/read-ua")
-async def api_opc_read_ua(url: str, node_id: str):
+async def api_opc_read_ua(url: str, node_id: str, username: str = "", password: str = ""):
     """
     Read a single OPC UA node value.
     Use this to test a node ID before adding it to config.json.
@@ -725,7 +747,11 @@ async def api_opc_read_ua(url: str, node_id: str):
         raise HTTPException(status_code=500, detail="asyncua not installed")
 
     try:
-        async with Client(url=url, timeout=10) as client:
+        client = Client(url=url, timeout=10)
+        if username:
+            client.set_user(username)
+            client.set_password(password)
+        async with client:
             node = client.get_node(node_id)
             value = await node.read_value()
             display_name = (await node.read_display_name()).Text

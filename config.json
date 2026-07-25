@@ -5,25 +5,25 @@
   },
   "database": {
     "path": "bioreactor_data.db",
-    "retention_days": 90
+    "note": "No automatic data purging — all historical data is retained indefinitely."
   },
   "nova": {
     "url": "opc.tcp://flexiiinterface:59888/NovaBiomedical",
     "poll_interval_seconds": 120
   },
   "vicell": {
-    "watch_folder": "",
+    "watch_folder": "c:/vicell",
     "poll_interval_seconds": 60
   },
   "opc": {
-    "protocol": "SIMULATE",
-    "poll_interval_seconds": 5,
+    "protocol": "OPC_UA",
+    "poll_interval_seconds": 60,
     "notes": [
       "Set protocol to OPC_UA when connecting to real DASware machines.",
       "Both DASware computers run OPC UA on port 51530.",
       "The OPC UA server starts successfully even when 'No license available for DASware connect' appears in DASware logs.",
-      "Node IDs below follow the DASware 6 domain hierarchy: Plant1/UnitAlias/Domain/SubDomain/Variable",
-      "Use the OPC UA Tag Browser in the dashboard sidebar to confirm exact node IDs from each machine."
+      "Node IDs follow the DASware connect manual (chapter 6): ns=2;s=Unit<x>/<Domain>/PV",
+      "Use the OPC UA Tag Browser in the dashboard sidebar to verify node IDs if reads fail."
     ],
     "servers": [
       {
@@ -31,7 +31,7 @@
         "type": "OPC_UA",
         "url": "opc.tcp://CTPCOG910098:51530/UA/connectServer",
         "plant_alias": "Plant1",
-        "enabled": false,
+        "enabled": true,
         "note": "Hostname CTPCOG910098, IP 192.168.137.8 (also has 10.10.10.11 for local Scivario LAN). DASware v6.7.1.0. Confirmed from Scivario/Connect/logs/debug.txt."
       },
       {
@@ -39,7 +39,7 @@
         "type": "OPC_UA",
         "url": "opc.tcp://CTPCMO508723:51530/UA/connectServer",
         "plant_alias": "Plant1",
-        "enabled": false,
+        "enabled": true,
         "note": "Hostname CTPCMO508723, IP 192.168.137.7. DASware v6.5.0.6. Confirmed from Dasbox/Connect/logs/debug.txt."
       }
     ]
@@ -52,18 +52,18 @@
       "opc_server": "DASware-Scivario",
       "unit_alias": "Unit1",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit1/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit1/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit1/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit1/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit1/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit1/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit1/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit1/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit1/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit1/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit1/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit1/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit1/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit1/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit1/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit1/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit1/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit1/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit1/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit1/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit1/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit1/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit1/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit1/Reactor/VLiquid"
       }
     },
     {
@@ -73,18 +73,18 @@
       "opc_server": "DASware-Scivario",
       "unit_alias": "Unit2",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit2/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit2/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit2/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit2/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit2/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit2/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit2/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit2/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit2/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit2/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit2/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit2/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit2/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit2/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit2/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit2/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit2/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit2/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit2/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit2/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit2/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit2/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit2/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit2/Reactor/VLiquid"
       }
     },
     {
@@ -94,18 +94,18 @@
       "opc_server": "DASware-Scivario",
       "unit_alias": "Unit3",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit3/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit3/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit3/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit3/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit3/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit3/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit3/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit3/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit3/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit3/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit3/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit3/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit3/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit3/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit3/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit3/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit3/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit3/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit3/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit3/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit3/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit3/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit3/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit3/Reactor/VLiquid"
       }
     },
     {
@@ -115,18 +115,18 @@
       "opc_server": "DASware-Scivario",
       "unit_alias": "Unit4",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit4/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit4/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit4/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit4/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit4/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit4/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit4/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit4/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit4/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit4/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit4/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit4/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit4/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit4/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit4/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit4/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit4/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit4/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit4/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit4/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit4/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit4/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit4/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit4/Reactor/VLiquid"
       }
     },
     {
@@ -136,18 +136,18 @@
       "opc_server": "DASware-DASbox",
       "unit_alias": "Unit1",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit1/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit1/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit1/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit1/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit1/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit1/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit1/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit1/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit1/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit1/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit1/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit1/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit1/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit1/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit1/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit1/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit1/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit1/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit1/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit1/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit1/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit1/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit1/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit1/Reactor/VLiquid"
       }
     },
     {
@@ -157,18 +157,18 @@
       "opc_server": "DASware-DASbox",
       "unit_alias": "Unit2",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit2/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit2/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit2/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit2/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit2/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit2/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit2/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit2/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit2/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit2/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit2/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit2/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit2/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit2/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit2/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit2/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit2/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit2/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit2/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit2/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit2/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit2/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit2/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit2/Reactor/VLiquid"
       }
     },
     {
@@ -178,18 +178,18 @@
       "opc_server": "DASware-DASbox",
       "unit_alias": "Unit3",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit3/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit3/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit3/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit3/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit3/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit3/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit3/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit3/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit3/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit3/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit3/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit3/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit3/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit3/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit3/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit3/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit3/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit3/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit3/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit3/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit3/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit3/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit3/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit3/Reactor/VLiquid"
       }
     },
     {
@@ -199,18 +199,18 @@
       "opc_server": "DASware-DASbox",
       "unit_alias": "Unit4",
       "tags": {
-        "temperature":       "ns=2;s=Plant1/Unit4/Temperature/Sensor/ActualValue",
-        "ph":                "ns=2;s=Plant1/Unit4/pH/Sensor/ActualValue",
-        "dissolved_oxygen":  "ns=2;s=Plant1/Unit4/DO/Sensor/ActualValue",
-        "agitation":         "ns=2;s=Plant1/Unit4/Agitation/Actuator/ActualValue",
-        "airflow":           "ns=2;s=Plant1/Unit4/Gassing/ActualValue",
-        "co2_exhaust":       "ns=2;s=Plant1/Unit4/Offgas/CO2",
-        "o2_exhaust":        "ns=2;s=Plant1/Unit4/Offgas/O2",
-        "base_pump":         "ns=2;s=Plant1/Unit4/PumpA/Actuator/ActualValue",
-        "acid_pump":         "ns=2;s=Plant1/Unit4/PumpB/Actuator/ActualValue",
-        "feed_pump":         "ns=2;s=Plant1/Unit4/PumpC/Actuator/ActualValue",
-        "pressure":          "ns=2;s=Plant1/Unit4/Pressure/Sensor/ActualValue",
-        "volume":            "ns=2;s=Plant1/Unit4/Volume/Sensor/ActualValue"
+        "temperature":       "ns=2;s=/Root/Unit4/Temperature/PV",
+        "ph":                "ns=2;s=/Root/Unit4/PH/PV",
+        "dissolved_oxygen":  "ns=2;s=/Root/Unit4/DO/PV",
+        "agitation":         "ns=2;s=/Root/Unit4/Agitation/PV",
+        "airflow":           "ns=2;s=/Root/Unit4/Gassing/F.PV",
+        "co2_exhaust":       "ns=2;s=/Root/Unit4/Offgas/XCO2.PV",
+        "o2_exhaust":        "ns=2;s=/Root/Unit4/Offgas/XO2.PV",
+        "base_pump":         "ns=2;s=/Root/Unit4/PumpA/PV",
+        "acid_pump":         "ns=2;s=/Root/Unit4/PumpB/PV",
+        "feed_pump":         "ns=2;s=/Root/Unit4/PumpC/PV",
+        "pressure":          "ns=2;s=/Root/Unit4/Pressure/PV",
+        "volume":            "ns=2;s=/Root/Unit4/Reactor/VLiquid"
       }
     }
   ],

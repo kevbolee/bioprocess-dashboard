@@ -157,6 +157,24 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 .pulse { animation: pulse 2s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 
+/* ---- Loading spinner (inline) ---- */
+.spinner-inline {
+  display: inline-block; width: 11px; height: 11px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.75s linear infinite;
+  vertical-align: middle; margin-right: 5px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Progress bar ---- */
+.progress-track {
+  height: 3px; background: var(--border); border-radius: 2px;
+  overflow: hidden; margin: 4px 0 8px;
+}
+.progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s ease; }
+.progress-fill.indeterminate { width: 35%; animation: progress-slide 1.3s ease-in-out infinite; }
+@keyframes progress-slide { 0%{transform:translateX(-120%)} 100%{transform:translateX(400%)} }
+
 /* ---- Scrollbar ---- */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
