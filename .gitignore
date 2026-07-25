@@ -56,9 +56,11 @@ Scivario/Connect/*.config
 NOVAexport/
 BioHTExport/
 vicellexport/
+excelexport/
 Dasbox/
 Scivario/
 MAST/
+presentation/
 
 # DASware Connect full installation — ignore everything except logs
 Dasbox/Connect/*
